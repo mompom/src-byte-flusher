@@ -14,7 +14,7 @@ extern "C" void enterSerialDfu(void);
 static constexpr bool kEnableUsbCdcSerialLog = false;
 
 // 펌웨어 버전 (메이저.마이너.패치)
-static const char* kFirmwareVersion = "1.1.41";
+static const char* kFirmwareVersion = "1.1.42";
 
 static void start_advertising();
 
@@ -184,6 +184,17 @@ static volatile bool g_abort_requested = false;
 static volatile uint8_t g_toggle_key = 0;
 
 // -----------------------------
+// Mouse Jiggler (화면잠금 방지)
+// -----------------------------
+// USB 연결 시 자동 시작, Flush 동작 중 자동 정지, 종료 후 자동 재개.
+static constexpr uint32_t kJigglerIntervalMs = 30000;   // 30초마다 1회 이동
+static constexpr int8_t kJigglerPixels = 1;             // 1픽셀 이동
+static constexpr uint32_t kJigglerCooldownMs = 5000;    // 버퍼가 빈 후 5초 대기 후 재개
+static uint32_t g_jiggler_last_move_ms = 0;
+static bool g_jiggler_direction = false;  // false=오른쪽, true=왼쪽
+static uint32_t g_last_flush_activity_ms = 0;
+
+// -----------------------------
 // 디버그(USB CDC Serial)
 // -----------------------------
 static void log_line(const char* msg) {
@@ -216,7 +227,13 @@ static volatile bool g_bootloader_request_pending = false;
 // -----------------------------
 Adafruit_USBD_HID usb_hid;
 
-static uint8_t const kHidReportDescriptor[] = {TUD_HID_REPORT_DESC_KEYBOARD()};
+static uint8_t const kHidReportDescriptor[] = {
+  TUD_HID_REPORT_DESC_KEYBOARD(HID_REPORT_ID(1)),
+  TUD_HID_REPORT_DESC_MOUSE(HID_REPORT_ID(2))
+};
+
+static constexpr uint8_t kReportIdKeyboard = 1;
+static constexpr uint8_t kReportIdMouse = 2;
 
 static void hid_begin() {
   usb_hid.setPollInterval(2);
@@ -236,9 +253,9 @@ static void hid_send_key(uint8_t modifier, uint8_t keycode) {
   uint8_t keycodes[6] = {0};
   keycodes[0] = keycode;
 
-  usb_hid.keyboardReport(0, modifier, keycodes);
+  usb_hid.keyboardReport(kReportIdKeyboard, modifier, keycodes);
   delay(g_key_press_delay_ms);
-  usb_hid.keyboardRelease(0);
+  usb_hid.keyboardRelease(kReportIdKeyboard);
   delay(g_key_press_delay_ms);
 }
 
@@ -249,9 +266,9 @@ static void hid_tap_modifier(uint8_t modifier) {
   }
 
   uint8_t keycodes[6] = {0};
-  usb_hid.keyboardReport(0, modifier, keycodes);
+  usb_hid.keyboardReport(kReportIdKeyboard, modifier, keycodes);
   delay(g_key_press_delay_ms);
-  usb_hid.keyboardRelease(0);
+  usb_hid.keyboardRelease(kReportIdKeyboard);
   delay(g_key_press_delay_ms);
 }
 
@@ -1001,7 +1018,7 @@ static void enter_bootloader_if_requested_in_loop() {
 
   // Best-effort: release any pressed keys before reboot.
   if (TinyUSBDevice.mounted() && usb_hid.ready()) {
-    usb_hid.keyboardRelease(0);
+    usb_hid.keyboardRelease(kReportIdKeyboard);
     delay(5);
   }
 
@@ -1280,6 +1297,39 @@ void setup() {
   start_advertising();
 }
 
+// -----------------------------
+// Mouse Jiggler
+// -----------------------------
+static bool is_flush_idle() {
+  return rb_used_bytes() == 0
+      && stash_head == stash_tail
+      && macro_used_bytes() == 0;
+}
+
+static void try_jiggle_mouse() {
+  if (!hid_ready()) return;
+
+  const uint32_t now = millis();
+
+  // Flush 중(버퍼에 데이터가 있으면) 활동 시각 갱신, 지글 안 함
+  if (!is_flush_idle()) {
+    g_last_flush_activity_ms = now;
+    return;
+  }
+
+  // 쿨다운: 마지막 Flush 활동 후 일정 시간 대기
+  if (now - g_last_flush_activity_ms < kJigglerCooldownMs) return;
+
+  // 간격 체크
+  if (now - g_jiggler_last_move_ms < kJigglerIntervalMs) return;
+
+  // 마우스 1px 이동 (좌↔우 반복)
+  const int8_t dx = g_jiggler_direction ? -kJigglerPixels : kJigglerPixels;
+  usb_hid.mouseReport(kReportIdMouse, 0, dx, 0, 0, 0);
+  g_jiggler_direction = !g_jiggler_direction;
+  g_jiggler_last_move_ms = now;
+}
+
 void loop() {
   // Apply pause/resume/abort even while paused.
   apply_pending_controls_in_loop();
@@ -1312,6 +1362,9 @@ void loop() {
     delay(5);
     return;
   }
+
+  // Mouse Jiggler: Flush가 아닌 유휴 상태에서만 마우스를 움직인다.
+  try_jiggle_mouse();
 
   // Pause: 장치 내부 큐를 소비(타이핑)하지 않는다.
   if (g_paused) {
