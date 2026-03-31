@@ -1,4 +1,4 @@
-# Auto Scroll Down + SPA 전환 구현 계획
+# Auto Scroll Down + SPA 전환 구현 계획 (v2)
 
 > **에이전트 작업자용:** 필수 하위 스킬: superpowers:subagent-driven-development (권장) 또는 superpowers:executing-plans를 사용하여 이 계획을 태스크 단위로 구현하세요. 각 단계는 체크박스(`- [ ]`) 문법으로 추적합니다.
 
@@ -8,26 +8,53 @@
 
 **기술 스택:** Web Bluetooth API, ES Modules, nRF52840 (Adafruit_TinyUSB_Arduino), PlatformIO
 
-**보안 참고:** 이 프로젝트의 웹 UI는 로컬 파일 또는 HTTPS를 통해 제공되며, 모든 HTML 콘텐츠는 개발자가 작성한 하드코딩된 문자열이다. 사용자 입력이나 외부 데이터가 innerHTML에 삽입되지 않으므로 XSS 위험은 없다. 기존 text.html/files.html의 인라인 HTML을 JS로 옮기는 것이며, data-i18n-html 속성도 기존 패턴을 따른다.
+---
+
+## 컨텍스트 오염 방지 전략
+
+### 문제
+- text.js (~1476줄), files.js (~2420줄)의 대규모 리팩터링에서 컨텍스트 윈도우 압축 시 정합성 손실 위험
+
+### 대응
+
+1. **BLE API 레퍼런스 파일** (`docs/superpowers/plans/ble-api-reference.md`)
+   - ble.js의 전체 export 목록, 시그니처, 사용 예시를 한 파일에 정리
+   - 모든 에이전트가 리팩터링 작업 시작 시 이 파일을 먼저 읽음
+   - 컨텍스트가 압축되더라도 파일에서 재확인 가능
+
+2. **로컬 앨리어스 패턴** — 비즈니스 로직 최소 변경
+   - 기존: `flushChar.writeValue(...)` (모듈 변수)
+   - 변경: init() 상단에서 `const flushChar = () => ble.getChar(ble.FLUSH_TEXT_CHAR_UUID);`
+   - 사용부: `flushChar().writeValue(...)` (괄호 하나만 추가)
+   - 이 패턴으로 1000줄+ 비즈니스 로직 코드의 변경량을 최소화
+
+3. **마이크로 스텝 분해** — 각 스텝은 하나의 관심사만 변경
+   - 기존 Task 8 (text.js 전체 리팩터링) → 6개 서브 태스크로 분해
+   - 각 서브 태스크는 커밋 포인트
+
+4. **검증 게이트** — 리팩터링 완료 후 코드 리뷰 에이전트가 정합성 검증
+   - ble.js API 호출과 실제 export의 일치
+   - init()/destroy() lifecycle에서 이벤트 누수 없음
+   - DOM ID 충돌 없음
 
 ---
 
 ## 파일 구조
 
 ### 새로 생성
-- `web/ble.js` — BLE 연결 공유 모듈 (connect/disconnect/characteristics/Device UI)
-- `web/app.js` — SPA 쉘, 탭 라우팅, 공통 레이아웃 관리
+- `docs/superpowers/plans/ble-api-reference.md` — BLE API 레퍼런스 (에이전트 컨텍스트 앵커)
+- `web/ble.js` — BLE 연결 공유 모듈
+- `web/app.js` — SPA 쉘, 탭 라우팅
 - `web/scroll.js` — Auto Scroll Down 기능 모듈
 
 ### 수정
-- `index.html` — SPA 쉘로 변환 (탭 네비게이션 + 컨테이너)
-- `web/text.js` — BLE 코드 제거, init()/destroy() 패턴으로 리팩터링
-- `web/files.js` — BLE 코드 제거, init()/destroy() 패턴으로 리팩터링
-- `web/style.css` — 탭 네비게이션 스타일 추가
-- `web/i18n.js` — basePath 기본값 변경 (SPA에서는 '.' 사용)
-- `lang/en.json` — scroll 관련 키 추가, home 카드 추가
-- `lang/ko.json` — scroll 관련 키 추가, home 카드 추가
-- `src/main.cpp` — scroll characteristic, callback, loop 로직 추가
+- `index.html` — SPA 쉘로 변환
+- `web/text.js` — BLE 코드 제거, init()/destroy() 패턴
+- `web/files.js` — BLE 코드 제거, init()/destroy() 패턴
+- `web/style.css` — 탭 스타일 추가
+- `lang/en.json` — scroll 키 추가
+- `lang/ko.json` — scroll 키 추가
+- `src/main.cpp` — scroll characteristic 추가
 
 ### 삭제
 - `web/text.html` — text.js의 init()으로 이동
@@ -35,1167 +62,376 @@
 
 ---
 
-## Task 1: 펌웨어 — Auto Scroll BLE Characteristic 추가
+## Phase 1: 독립 모듈 (subagent 병렬 가능)
 
-**파일:**
-- 수정: `src/main.cpp`
+### Task 1: 펌웨어 — Auto Scroll BLE Characteristic 추가
 
-- [ ] **Step 1: UUID 및 상태 변수 추가**
+**파일:** `src/main.cpp`
 
-`src/main.cpp`의 UUID 섹션(기존 `kNicknameCharUuid` 뒤)에 scroll UUID를 추가한다:
+- [ ] **Step 1: UUID 추가** — `kNicknameCharUuid` 뒤에 `kScrollCharUuid = "f3641407-..."` 추가
+- [ ] **Step 2: 상태 변수 추가** — Mouse Jiggler 뒤에 `g_scroll_active`, `g_scroll_interval_ms`, `g_scroll_last_ms`
+- [ ] **Step 3: BLECharacteristic 선언** — `BLECharacteristic scroll_char(kScrollCharUuid);`
+- [ ] **Step 4: scroll_write_cb 콜백** — 3바이트 프로토콜 파싱 (cmd + interval_ms LE)
+- [ ] **Step 5: try_auto_scroll() 함수** — loop()에서 호출, mouseScroll(-1, 0)
+- [ ] **Step 6: BLE disconnect 시 정지** — `ble_disconnect_cb`에 `g_scroll_active = false`
+- [ ] **Step 7: setup() 등록** — scroll_char 초기화 + 로그
+- [ ] **Step 8: loop() 호출** — `try_jiggle_mouse()` 뒤에 `try_auto_scroll()`
+- [ ] **Step 9: 빌드** — `pio run`
+- [ ] **Step 10: 커밋**
 
-```cpp
-static const char* kScrollCharUuid = "f3641407-00b0-4240-ba50-05ca45bf8abc";
-```
+### Task 2: i18n — scroll 번역 키 추가
 
-Mouse Jiggler 상태 변수 뒤(기존 `g_last_flush_activity_ms` 뒤)에 scroll 상태 변수를 추가한다:
+**파일:** `lang/en.json`, `lang/ko.json`
 
-```cpp
-// -----------------------------
-// Auto Scroll (BLE 제어)
-// -----------------------------
-static volatile bool g_scroll_active = false;
-static volatile uint16_t g_scroll_interval_ms = 100;
-static uint32_t g_scroll_last_ms = 0;
-```
-
-- [ ] **Step 2: BLECharacteristic 선언 추가**
-
-기존 `BLECharacteristic bootloader_char` 뒤에 추가:
-
-```cpp
-BLECharacteristic scroll_char(kScrollCharUuid);
-```
-
-- [ ] **Step 3: scroll_write_cb 콜백 작성**
-
-`bootloader_write_cb` 뒤에 추가:
-
-```cpp
-static void scroll_write_cb(uint16_t /*conn_hdl*/, BLECharacteristic* /*chr*/, uint8_t* data, uint16_t len) {
-  // 포맷: [command(u8)][interval_ms(u16 LE)]
-  // command: 0x00=stop, 0x01=start
-  if (len < 1) return;
-
-  const uint8_t cmd = data[0];
-  if (cmd == 0x01 && len >= 3) {
-    const uint16_t interval = static_cast<uint16_t>(data[1]) | (static_cast<uint16_t>(data[2]) << 8);
-    g_scroll_interval_ms = clamp_u16(interval, 10, 2000);
-    g_scroll_active = true;
-    g_scroll_last_ms = millis();
-  } else {
-    g_scroll_active = false;
-  }
-}
-```
-
-- [ ] **Step 4: try_auto_scroll 함수 작성**
-
-`try_jiggle_mouse()` 뒤에 추가:
-
-```cpp
-static void try_auto_scroll() {
-  if (!g_scroll_active || !hid_ready()) return;
-
-  // Flush 동작 중에는 스크롤 정지
-  if (!is_flush_idle()) return;
-
-  const uint32_t now = millis();
-  if (now - g_scroll_last_ms < g_scroll_interval_ms) return;
-
-  usb_hid.mouseScroll(kReportIdMouse, -1, 0);
-  g_scroll_last_ms = now;
-}
-```
-
-- [ ] **Step 5: BLE disconnect 시 스크롤 정지**
-
-`ble_disconnect_cb` 함수 내 `log_line("BLE 연결 해제됨");` 줄 바로 앞에 추가:
-
-```cpp
-    g_scroll_active = false;
-```
-
-- [ ] **Step 6: setup()에서 scroll characteristic 등록**
-
-`bootloader_char.begin();` 뒤에 추가:
-
-```cpp
-  // Auto Scroll (BLE 제어)
-  scroll_char.setProperties(CHR_PROPS_WRITE);
-  scroll_char.setPermission(SECMODE_OPEN, SECMODE_OPEN);
-  scroll_char.setWriteCallback(scroll_write_cb);
-  scroll_char.begin();
-```
-
-그리고 로그 출력 섹션에도 추가:
-
-```cpp
-  log_kv("Scroll UUID", kScrollCharUuid);
-```
-
-- [ ] **Step 7: loop()에서 try_auto_scroll 호출**
-
-`try_jiggle_mouse();` 호출 뒤에 추가:
-
-```cpp
-  try_auto_scroll();
-```
-
-- [ ] **Step 8: 빌드 확인**
-
-실행: `cd /home/aidan/projects/src-byte-flusher && pio run`
-기대 결과: 컴파일 성공
-
-- [ ] **Step 9: 커밋**
-
-```bash
-git add src/main.cpp
-git commit -m "feat: add auto scroll BLE characteristic (f3641407)"
-```
-
----
-
-## Task 2: i18n — scroll 관련 번역 키 추가
-
-**파일:**
-- 수정: `lang/en.json`
-- 수정: `lang/ko.json`
-
-- [ ] **Step 1: lang/en.json에 scroll 섹션 추가**
-
-`"home"` 객체에 2개의 키를 추가:
-
-```json
-"autoScroll": "🔽 Auto Scroll",
-"autoScrollDesc": "Auto scroll down on Target PC"
-```
-
-최상위에 `"scroll"` 섹션 추가:
-
-```json
-"scroll": {
-  "title": "Auto Scroll Down",
-  "speed": "Scroll Speed",
-  "speedSlow": "Slow",
-  "speedFast": "Fast",
-  "start": "Start",
-  "stop": "Stop",
-  "statusScrolling": "Scrolling...",
-  "statusStopped": "Stopped",
-  "connectFirst": "Connect a device first.",
-  "noteScroll": "Scroll speed is set before starting and cannot be changed during scrolling."
-}
-```
-
-- [ ] **Step 2: lang/ko.json에 scroll 섹션 추가**
-
-`"home"` 객체에 2개의 키를 추가:
-
-```json
-"autoScroll": "🔽 자동 스크롤",
-"autoScrollDesc": "Target PC에서 자동으로 아래로 스크롤"
-```
-
-최상위에 `"scroll"` 섹션 추가:
-
-```json
-"scroll": {
-  "title": "자동 스크롤 다운",
-  "speed": "스크롤 속도",
-  "speedSlow": "느림",
-  "speedFast": "빠름",
-  "start": "시작",
-  "stop": "정지",
-  "statusScrolling": "스크롤 중...",
-  "statusStopped": "정지됨",
-  "connectFirst": "장치를 먼저 연결하세요.",
-  "noteScroll": "스크롤 속도는 시작 전에 설정하며, 스크롤 중에는 변경할 수 없습니다."
-}
-```
-
+- [ ] **Step 1: en.json** — `home.autoScroll`, `home.autoScrollDesc`, `scroll.*` 섹션 추가
+- [ ] **Step 2: ko.json** — 동일 키 한국어 번역 추가
 - [ ] **Step 3: 커밋**
 
-```bash
-git add lang/en.json lang/ko.json
-git commit -m "feat: add i18n keys for auto scroll"
+### Task 3: BLE API 레퍼런스 파일 작성
+
+**파일:** `docs/superpowers/plans/ble-api-reference.md`
+
+- [ ] **Step 1: 레퍼런스 작성** — ble.js의 전체 API를 문서화:
+
+```markdown
+# ble.js API Reference
+
+## UUID 상수
+- `SERVICE_UUID`, `FLUSH_TEXT_CHAR_UUID`, `CONFIG_CHAR_UUID`, `STATUS_CHAR_UUID`
+- `MACRO_CHAR_UUID`, `BOOTLOADER_CHAR_UUID`, `NICKNAME_CHAR_UUID`, `SCROLL_CHAR_UUID`
+
+## 연결 상태
+- `isConnected()` → boolean — `device?.gatt?.connected` 대체
+- `getDevice()` → BluetoothDevice | null
+- `getDeviceName()` → string — `device.name` 대체
+- `getChar(uuid)` → BLECharacteristic | null — `flushChar`, `configChar` 등 대체
+
+## 버퍼 상태 (Flow Control)
+- `getDeviceBufCapacity()` → number | null
+- `getDeviceBufFree()` → number | null
+- `getDeviceBufUpdatedAt()` → number
+- `readStatusOnce()` → Promise
+- `addStatusWaiter(fn)` — statusWaiters.push(fn) 대체
+
+## 닉네임
+- `sanitizeNickname(raw)` → string
+- `loadSavedNickname()` → string
+- `saveNicknameToLocalStorage(v)`
+- `readDeviceNicknameOnce()` → Promise<string>
+- `writeDeviceNickname(nickname)` → Promise<string>
+
+## 연결/해제
+- `connect()` → Promise<{cancelled: boolean, device?}>
+- `reconnect()` → Promise — 전송 중 끊김 시 재연결
+- `disconnect()` — 연결 해제
+- `requestBootloader()` → Promise
+
+## 이벤트
+- `on(event, fn)` — event: 'connect' | 'disconnect' | 'status'
+- `off(event, fn)`
+
+## 리팩터링 치환 규칙
+| 기존 코드 | 새 코드 |
+|-----------|---------|
+| `device?.gatt?.connected` | `ble.isConnected()` |
+| `device.name` | `ble.getDeviceName()` |
+| `flushChar` | `ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)` |
+| `configChar` | `ble.getChar(ble.CONFIG_CHAR_UUID)` |
+| `statusChar` | `ble.getChar(ble.STATUS_CHAR_UUID)` |
+| `macroChar` | `ble.getChar(ble.MACRO_CHAR_UUID)` |
+| `bootloaderChar` | `ble.getChar(ble.BOOTLOADER_CHAR_UUID)` |
+| `nicknameChar` | `ble.getChar(ble.NICKNAME_CHAR_UUID)` |
+| `deviceBufCapacity` | `ble.getDeviceBufCapacity()` |
+| `deviceBufFree` | `ble.getDeviceBufFree()` |
+| `deviceBufUpdatedAt` | `ble.getDeviceBufUpdatedAt()` |
+| `readStatusOnce()` | `ble.readStatusOnce()` |
+| `statusWaiters.push(fn)` | `ble.addStatusWaiter(fn)` |
 ```
+
+- [ ] **Step 2: 커밋**
+
+### Task 4: ble.js — 공유 BLE 연결 모듈 작성
+
+**파일:** `web/ble.js`
+
+에이전트 지시: `docs/superpowers/plans/ble-api-reference.md`를 먼저 읽고, 거기에 정의된 API를 정확히 구현하라.
+
+- [ ] **Step 1: ble.js 전체 작성** — UUID 상수, 연결 상태, 이벤트 시스템, connect/disconnect/reconnect, 닉네임, 부트로더, status 관리
+- [ ] **Step 2: 커밋**
+
+### Task 5: style.css — 탭 스타일 추가
+
+**파일:** `web/style.css`
+
+- [ ] **Step 1: 파일 끝에 `.tabLink`, `.tabLink.tabActive` 스타일 추가**
+- [ ] **Step 2: 커밋**
 
 ---
 
-## Task 3: ble.js — 공유 BLE 연결 모듈 작성
+## Phase 2: SPA 쉘 (Phase 1 완료 후)
 
-**파일:**
-- 생성: `web/ble.js`
+### Task 6: app.js — SPA 쉘 및 탭 라우팅
 
-- [ ] **Step 1: ble.js 작성**
+**파일:** `web/app.js`
 
-text.js와 files.js에서 공통으로 사용하는 BLE 연결/해제 로직을 추출한다. 기존 text.js의 connect/disconnect/reconnectLoop 패턴을 기반으로 한다.
+에이전트 지시: `docs/superpowers/plans/ble-api-reference.md`를 먼저 읽어라.
 
-```javascript
-// Shared BLE connection manager for ByteFlusher SPA
-// - Single source of truth for BLE UUIDs, connection state, and device management
-// - Used by all feature modules (text, files, scroll)
+- [ ] **Step 1: app.js 작성** — 라우팅, 공통 Device UI, BLE 이벤트 바인딩, 모듈 lazy import + init/destroy 호출
+- [ ] **Step 2: 커밋**
 
-import { t } from './i18n.js';
+### Task 7: index.html — SPA 쉘로 변환
 
-// BLE UUIDs (firmware src/main.cpp와 일치)
-export const SERVICE_UUID = 'f3641400-00b0-4240-ba50-05ca45bf8abc';
-export const FLUSH_TEXT_CHAR_UUID = 'f3641401-00b0-4240-ba50-05ca45bf8abc';
-export const CONFIG_CHAR_UUID = 'f3641402-00b0-4240-ba50-05ca45bf8abc';
-export const STATUS_CHAR_UUID = 'f3641403-00b0-4240-ba50-05ca45bf8abc';
-export const MACRO_CHAR_UUID = 'f3641404-00b0-4240-ba50-05ca45bf8abc';
-export const BOOTLOADER_CHAR_UUID = 'f3641405-00b0-4240-ba50-05ca45bf8abc';
-export const NICKNAME_CHAR_UUID = 'f3641406-00b0-4240-ba50-05ca45bf8abc';
-export const SCROLL_CHAR_UUID = 'f3641407-00b0-4240-ba50-05ca45bf8abc';
+**파일:** `index.html`
 
-const LS_DEVICE_NICKNAME = 'byteflusher.deviceNickname';
+- [ ] **Step 1: 전체 교체** — 탭 네비게이션(#, #text, #files, #scroll), homeSection, featureLayout(공통 Device sidebar + sidebarExtra + mainContainer)
+- [ ] **Step 2: 커밋**
 
-// --- 연결 상태 ---
-let device = null;
-let server = null;
-const chars = {};  // uuid -> BLECharacteristic
+---
 
-let deviceBufCapacity = null;
-let deviceBufFree = null;
-let deviceBufUpdatedAt = 0;
-let statusWaiters = [];
+## Phase 3: scroll.js (Phase 2 완료 후)
 
-// 연결/해제 이벤트 리스너
-const listeners = { connect: [], disconnect: [], status: [] };
+### Task 8: scroll.js — Auto Scroll 기능 모듈
 
-export function on(event, fn) {
-  if (listeners[event]) listeners[event].push(fn);
-}
+**파일:** `web/scroll.js`
 
-export function off(event, fn) {
-  if (listeners[event]) {
-    listeners[event] = listeners[event].filter(f => f !== fn);
-  }
-}
+에이전트 지시: `docs/superpowers/plans/ble-api-reference.md`를 먼저 읽어라. DOM 생성은 DOM API(createElement/appendChild)를 사용하라.
 
-function emit(event, ...args) {
-  for (const fn of (listeners[event] || [])) {
-    try { fn(...args); } catch { /* ignore */ }
-  }
-}
+- [ ] **Step 1: scroll.js 작성** — Speed 슬라이더, Start/Stop, BLE 명령 전송, init/destroy
+- [ ] **Step 2: 커밋**
 
-export function isConnected() {
-  return Boolean(device?.gatt?.connected);
-}
+---
 
-export function getDevice() {
-  return device;
-}
+## Phase 4: text.js 리팩터링 (마이크로 스텝)
 
-export function getChar(uuid) {
-  return chars[uuid] || null;
-}
+**공통 원칙:**
+- 에이전트는 각 스텝 시작 시 `docs/superpowers/plans/ble-api-reference.md`를 읽어라
+- 비즈니스 로직(flushText, preprocessing, metrics, 한글 매핑 등)은 건드리지 않는다
+- 변경량을 최소화한다 — 삭제와 치환만 수행
 
-export function getDeviceBufCapacity() { return deviceBufCapacity; }
-export function getDeviceBufFree() { return deviceBufFree; }
-export function getDeviceBufUpdatedAt() { return deviceBufUpdatedAt; }
+### Task 9: text.js — BLE import 추가 및 변수 선언 제거
 
-export function addStatusWaiter(fn) {
-  statusWaiters.push(fn);
-}
+**파일:** `web/text.js`
 
-function resolveStatusWaiters() {
-  const waiters = statusWaiters;
-  statusWaiters = [];
-  for (const fn of waiters) {
-    try { fn(); } catch { /* ignore */ }
-  }
-}
+- [ ] **Step 1:** 파일 상단 변경
+  - `import { initI18n, t, getLocale } from './i18n.js';` → `import { t, getLocale } from './i18n.js';` (initI18n 제거, app.js가 호출)
+  - `import * as ble from './ble.js';` 추가
+  - UUID 상수 6개 (SERVICE_UUID ~ NICKNAME_CHAR_UUID) 삭제
+  - `LS_DEVICE_NICKNAME` 삭제 (ble.js가 관리)
+  - BLE 상태 변수 삭제: `device`, `server`, `flushChar`, `configChar`, `statusChar`, `bootloaderChar`, `nicknameChar`, `deviceBufCapacity`, `deviceBufFree`, `deviceBufUpdatedAt`, `statusWaiters`
+- [ ] **Step 2: 커밋** — `refactor(text): replace BLE vars with ble.js imports`
 
-function handleStatusValue(dataView) {
-  if (!dataView || dataView.byteLength < 4) return;
-  const cap = dataView.getUint16(0, true);
-  const free = dataView.getUint16(2, true);
-  if (Number.isFinite(cap) && cap > 0) deviceBufCapacity = cap;
-  if (Number.isFinite(free) && free >= 0) deviceBufFree = free;
-  deviceBufUpdatedAt = performance.now();
-  resolveStatusWaiters();
-  emit('status', { capacity: deviceBufCapacity, free: deviceBufFree });
-}
+### Task 10: text.js — BLE 함수 삭제 및 치환
 
-export async function readStatusOnce() {
-  const sc = chars[STATUS_CHAR_UUID];
-  if (!sc) return;
-  try {
-    const v = await sc.readValue();
-    handleStatusValue(v);
-  } catch { /* ignore */ }
-}
+**파일:** `web/text.js`
 
-// --- 닉네임 ---
-export function sanitizeNickname(raw) {
-  return String(raw ?? '').trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12);
-}
+에이전트 지시: `docs/superpowers/plans/ble-api-reference.md`의 치환 규칙 표를 참조하라.
 
-export function loadSavedNickname() {
-  return sanitizeNickname(localStorage.getItem(LS_DEVICE_NICKNAME) || '');
-}
+- [ ] **Step 1:** 다음 함수들을 삭제 (ble.js에 이미 존재):
+  - `resolveStatusWaiters()`, `handleStatusValue()`, `readStatusOnce()`, `waitForStatusUpdate()`
+  - `sanitizeNickname()`, `loadSavedNickname()`, `saveNicknameToLocalStorage()`, `setNicknameUiValue()`, `readDeviceNicknameOnce()`, `writeDeviceNickname()`
+  - `getConnectFailureHelpText()`
+  - `connect()`, `reconnectLoop()`, `requestBootloader()`, `disconnect()`
 
-export function saveNicknameToLocalStorage(v) {
-  const s = sanitizeNickname(v);
-  if (s) localStorage.setItem(LS_DEVICE_NICKNAME, s);
-  else localStorage.removeItem(LS_DEVICE_NICKNAME);
-}
+- [ ] **Step 2:** 남은 코드에서 BLE 변수 참조 치환:
+  - `device?.gatt?.connected` → `ble.isConnected()`
+  - `device.name` / `device?.name` → `ble.getDeviceName()`
+  - `flushChar` → `ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)`
+  - `configChar` → `ble.getChar(ble.CONFIG_CHAR_UUID)`
+  - `statusChar` → `ble.getChar(ble.STATUS_CHAR_UUID)`
+  - `bootloaderChar` → `ble.getChar(ble.BOOTLOADER_CHAR_UUID)`
+  - `nicknameChar` → `ble.getChar(ble.NICKNAME_CHAR_UUID)`
+  - `deviceBufCapacity` → `ble.getDeviceBufCapacity()`
+  - `deviceBufFree` → `ble.getDeviceBufFree()`
+  - `deviceBufUpdatedAt` → `ble.getDeviceBufUpdatedAt()`
+  - `readStatusOnce()` → `ble.readStatusOnce()`
+  - `statusWaiters.push(fn)` → `ble.addStatusWaiter(fn)`
 
-export async function readDeviceNicknameOnce() {
-  const nc = chars[NICKNAME_CHAR_UUID];
-  if (!nc) return '';
-  try {
-    const v = await nc.readValue();
-    const u8 = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
-    return sanitizeNickname(new TextDecoder().decode(u8));
-  } catch { return ''; }
-}
-
-export async function writeDeviceNickname(nickname) {
-  const nc = chars[NICKNAME_CHAR_UUID];
-  if (!nc) throw new Error(t('error.noNicknameChar'));
-  const s = sanitizeNickname(nickname);
-  const raw = String(nickname ?? '').trim();
-  if (raw && !s) throw new Error(t('error.nicknameInvalid'));
-  if (!s) {
-    await nc.writeValue(Uint8Array.of(0));
-  } else {
-    await nc.writeValue(new TextEncoder().encode(s));
-  }
-  saveNicknameToLocalStorage(s);
-  return s;
-}
-
-// --- 부트로더 ---
-export async function requestBootloader() {
-  const bc = chars[BOOTLOADER_CHAR_UUID];
-  if (!bc) throw new Error(t('error.noBootloaderChar'));
-  await bc.writeValue(Uint8Array.of(1));
-}
-
-// --- 연결 실패 도움말 ---
-function getConnectFailureHelpText(err) {
-  const name = (err?.name ?? '').toString();
-  const msg = (err?.message ?? String(err ?? '')).toString();
-  if (/No\s+Characteristics\s+matching\s+UUID/i.test(msg) || /No\s+Services\s+matching\s+UUID/i.test(msg)) {
-    return t('error.gattNotFound');
-  }
-  if (name === 'NotSupportedError') return t('error.notSupported');
-  if (name === 'NotAllowedError') return t('error.notAllowed');
-  return t('error.connectFailed', { msg });
-}
-
-// --- 내부: characteristic 획득 ---
-async function acquireCharacteristics(service) {
-  // 필수
-  chars[FLUSH_TEXT_CHAR_UUID] = await service.getCharacteristic(FLUSH_TEXT_CHAR_UUID);
-
-  // 선택적 characteristic들
-  const optionalUuids = [
-    CONFIG_CHAR_UUID,
-    STATUS_CHAR_UUID,
-    MACRO_CHAR_UUID,
-    BOOTLOADER_CHAR_UUID,
-    NICKNAME_CHAR_UUID,
-    SCROLL_CHAR_UUID,
-  ];
-  for (const uuid of optionalUuids) {
-    try { chars[uuid] = await service.getCharacteristic(uuid); }
-    catch { chars[uuid] = null; }
-  }
-
-  // Status notification 구독
-  const sc = chars[STATUS_CHAR_UUID];
-  if (sc) {
-    sc.addEventListener('characteristicvaluechanged', (ev) => {
-      handleStatusValue(ev?.target?.value);
+- [ ] **Step 3:** `waitForStatusUpdate()`를 로컬 재정의 (ble.addStatusWaiter 기반):
+  ```javascript
+  function waitForStatusUpdate(timeoutMs) {
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, timeoutMs);
+      ble.addStatusWaiter(() => { clearTimeout(t); resolve(); });
     });
-    await sc.startNotifications();
-    await readStatusOnce();
   }
-}
+  ```
 
-function clearState() {
-  server = null;
-  for (const k of Object.keys(chars)) chars[k] = null;
-  deviceBufCapacity = null;
-  deviceBufFree = null;
-  deviceBufUpdatedAt = 0;
-  resolveStatusWaiters();
-}
-
-// --- 연결 ---
-export async function connect() {
-  if (!navigator.bluetooth) throw new Error(t('error.noWebBluetooth'));
-
-  const requestOptions = {
-    filters: [{ services: [SERVICE_UUID] }, { namePrefix: 'ByteFlusher' }],
-    optionalServices: [SERVICE_UUID],
-  };
-
-  try {
-    device = await navigator.bluetooth.requestDevice(requestOptions);
-  } catch (err) {
-    if ((err?.name ?? '') === 'NotFoundError') {
-      return { cancelled: true };
-    }
-    throw err;
-  }
-
-  device.addEventListener('gattserverdisconnected', () => {
-    clearState();
-    emit('disconnect');
-  });
-
-  try {
-    server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE_UUID);
-    await acquireCharacteristics(service);
-  } catch (err) {
-    clearState();
-    throw new Error(getConnectFailureHelpText(err));
-  }
-
-  emit('connect', device);
-  return { cancelled: false, device };
-}
-
-// --- 재연결 (전송 중 끊김 시) ---
-export async function reconnect() {
-  if (!device) throw new Error(t('error.noDevice'));
-
-  if (!device.gatt.connected) {
-    server = await device.gatt.connect();
-  } else {
-    server = device.gatt;
-  }
-
-  const service = await server.getPrimaryService(SERVICE_UUID);
-  await acquireCharacteristics(service);
-
-  emit('connect', device);
-}
-
-// --- 해제 ---
-export function disconnect() {
-  if (device?.gatt?.connected) {
-    device.gatt.disconnect();
-  }
-}
-
-// --- 유틸리티 ---
-export function getDeviceName() {
-  return device?.name ?? '';
-}
-```
-
-- [ ] **Step 2: 커밋**
-
-```bash
-git add web/ble.js
-git commit -m "feat: add shared BLE connection module (ble.js)"
-```
-
----
-
-## Task 4: app.js — SPA 쉘 및 탭 라우팅 작성
-
-**파일:**
-- 생성: `web/app.js`
-
-- [ ] **Step 1: app.js 작성**
-
-```javascript
-// SPA shell: tab routing, common sidebar (Device), module lifecycle
-import { initI18n, t, applyDom } from './i18n.js';
-import * as ble from './ble.js';
-
-// 모듈은 lazy import
-let textModule = null;
-let filesModule = null;
-let scrollModule = null;
-
-const ROUTES = {
-  '': 'home',
-  '#': 'home',
-  '#text': 'text',
-  '#files': 'files',
-  '#scroll': 'scroll',
-};
-
-let currentRoute = null;
-let els = {};
-
-function getRoute() {
-  const hash = location.hash || '';
-  return ROUTES[hash] || 'home';
-}
-
-// --- Device UI (공통 사이드바) ---
-function setStatus(text, details = '') {
-  if (els.statusText) els.statusText.textContent = text;
-  if (els.detailsText) els.detailsText.textContent = details;
-}
-
-function setUiConnected(connected) {
-  if (els.btnConnect) els.btnConnect.disabled = connected;
-  if (els.btnDisconnect) els.btnDisconnect.disabled = !connected;
-  if (els.btnBootloader) els.btnBootloader.disabled = !connected || !ble.getChar(ble.BOOTLOADER_CHAR_UUID);
-  if (els.btnApplyNickname) els.btnApplyNickname.disabled = !connected || !ble.getChar(ble.NICKNAME_CHAR_UUID);
-}
-
-async function handleConnect() {
-  try {
-    setStatus(t('status.selectingDevice'), t('status.selectDevicePopup'));
-    const result = await ble.connect();
-    if (result.cancelled) {
-      setStatus(t('status.disconnected'), '');
-      setUiConnected(false);
-      return;
-    }
-    // 닉네임 로드
-    if (els.deviceNickname) {
-      const deviceNick = await ble.readDeviceNicknameOnce();
-      const fallback = ble.loadSavedNickname();
-      els.deviceNickname.value = ble.sanitizeNickname(deviceNick || fallback);
-    }
-    setStatus(t('status.connected'), `${ble.getDeviceName() || 'ByteFlusher'} / ${ble.SERVICE_UUID}`);
-    setUiConnected(true);
-  } catch (err) {
-    setStatus(t('status.connectionFailed'), err?.message ?? String(err));
-    setUiConnected(false);
-  }
-}
-
-function handleDisconnect() {
-  ble.disconnect();
-}
-
-async function handleBootloader() {
-  if (!ble.isConnected()) return;
-  const ok = confirm(t('confirm.bootloader'));
-  if (!ok) return;
-  setStatus(t('status.rebootRequesting'), t('status.rebootEntering'));
-  try {
-    await ble.requestBootloader();
-  } catch (err) {
-    setStatus(t('status.failed'), t('error.bootloaderRequestFailed', { msg: String(err?.message ?? err ?? '') }));
-  }
-}
-
-async function handleSaveNickname() {
-  if (!ble.isConnected()) return;
-  const raw = els.deviceNickname?.value ?? '';
-  try {
-    const saved = await ble.writeDeviceNickname(raw);
-    if (els.deviceNickname) els.deviceNickname.value = saved;
-    setStatus(t('status.connected'), t('status.nicknameSaved', { name: saved || '-' }));
-  } catch (err) {
-    setStatus(t('status.error'), err?.message ?? String(err));
-  }
-}
-
-// --- 라우팅 ---
-async function switchRoute(route) {
-  // 현재 모듈 파괴
-  if (currentRoute === 'text' && textModule) textModule.destroy();
-  if (currentRoute === 'files' && filesModule) filesModule.destroy();
-  if (currentRoute === 'scroll' && scrollModule) scrollModule.destroy();
-
-  const mainContainer = document.getElementById('mainContainer');
-  const sidebarExtra = document.getElementById('sidebarExtra');
-  const homeSection = document.getElementById('homeSection');
-  const featureLayout = document.getElementById('featureLayout');
-
-  if (route === 'home') {
-    homeSection.hidden = false;
-    featureLayout.hidden = true;
-    mainContainer.textContent = '';
-    sidebarExtra.textContent = '';
-  } else {
-    homeSection.hidden = true;
-    featureLayout.hidden = false;
-    mainContainer.textContent = '';
-    sidebarExtra.textContent = '';
-
-    if (route === 'text') {
-      if (!textModule) textModule = await import('./text.js');
-      textModule.init(mainContainer, sidebarExtra);
-    } else if (route === 'files') {
-      if (!filesModule) filesModule = await import('./files.js');
-      filesModule.init(mainContainer, sidebarExtra);
-    } else if (route === 'scroll') {
-      if (!scrollModule) scrollModule = await import('./scroll.js');
-      scrollModule.init(mainContainer, sidebarExtra);
+- [ ] **Step 4:** `reconnectLoop()`을 ble.reconnect() 기반으로 재작성:
+  ```javascript
+  async function reconnectLoop() {
+    let attempt = 0;
+    while (!stopRequested) {
+      attempt += 1;
+      try {
+        setStatus(t('status.reconnecting'), t('status.attempt', { n: attempt }));
+        await ble.reconnect();
+        setStatus(t('status.reconnectSuccess'), ble.getDeviceName() || 'BLE Device');
+        return;
+      } catch (err) {
+        const msg = err?.message ?? String(err);
+        setStatus(t('status.reconnectFailed'), `${t('status.attempt', { n: attempt })}: ${msg}`);
+        const backoffMs = Math.min(5000, 250 + attempt * 250);
+        await sleep(backoffMs);
+      }
     }
   }
+  ```
 
-  // 탭 활성 상태 업데이트
-  document.querySelectorAll('.tabLink').forEach(a => {
-    const linkRoute = ROUTES[a.getAttribute('href')] || 'home';
-    a.classList.toggle('tabActive', linkRoute === route);
-  });
+- [ ] **Step 5: 커밋** — `refactor(text): remove BLE functions, apply ble.js substitutions`
 
-  currentRoute = route;
-}
+### Task 11: text.js — DOM 생성 함수 작성
 
-// --- BLE 이벤트 ---
-function onBleConnect() {
-  setStatus(t('status.connected'), `${ble.getDeviceName() || 'ByteFlusher'} / ${ble.SERVICE_UUID}`);
-  setUiConnected(true);
-}
+**파일:** `web/text.js`
 
-function onBleDisconnect() {
-  setStatus(t('status.disconnected'), '');
-  setUiConnected(false);
-}
+에이전트 지시: `web/text.html`의 내용을 읽어서 사이드바와 메인 영역 HTML을 DOM API로 생성하는 함수를 작성하라. 기존 text.html의 Device 섹션은 제외 (app.js가 관리). data-i18n 속성은 그대로 유지.
 
-// --- 초기화 ---
-export async function main() {
-  await initI18n({ basePath: '.' });
+- [ ] **Step 1:** 두 함수 작성 (파일 끝에 추가):
+  - `function createTextSidebar()` — Cautions + Transfer Settings + Notes 섹션을 DOM API로 생성하여 DocumentFragment 반환
+  - `function createTextMain()` — textarea + 버튼 + metrics 영역을 DOM API로 생성하여 DocumentFragment 반환
 
-  els = {
-    btnConnect: document.getElementById('btnConnect'),
-    btnDisconnect: document.getElementById('btnDisconnect'),
-    btnBootloader: document.getElementById('btnBootloader'),
-    btnApplyNickname: document.getElementById('btnApplyNickname'),
-    deviceNickname: document.getElementById('deviceNickname'),
-    statusText: document.getElementById('statusText'),
-    detailsText: document.getElementById('detailsText'),
-  };
+- [ ] **Step 2: 커밋** — `feat(text): add DOM creation functions for SPA`
 
-  // 이벤트 바인딩
-  els.btnConnect?.addEventListener('click', handleConnect);
-  els.btnDisconnect?.addEventListener('click', handleDisconnect);
-  els.btnBootloader?.addEventListener('click', handleBootloader);
-  els.btnApplyNickname?.addEventListener('click', handleSaveNickname);
+### Task 12: text.js — init()/destroy() 래퍼 및 이벤트 정리
 
-  // BLE 이벤트
-  ble.on('connect', onBleConnect);
-  ble.on('disconnect', onBleDisconnect);
+**파일:** `web/text.js`
 
-  // 초기 라우팅
-  const route = getRoute();
-  await switchRoute(route);
+에이전트 지시: 기존 모듈 최하단의 DOMContentLoaded/자동실행 코드를 init() 함수로 이동하라. destroy()에서는 이벤트 리스너와 타이머를 정리하라.
 
-  // hash 변경 시 라우팅
-  window.addEventListener('hashchange', async () => {
-    const route = getRoute();
-    await switchRoute(route);
-  });
-}
+- [ ] **Step 1:** `export function init(mainContainer, sidebarExtra)` 작성:
+  - `sidebarExtra.appendChild(createTextSidebar())`
+  - `mainContainer.appendChild(createTextMain())`
+  - `applyDom(sidebarExtra)`, `applyDom(mainContainer)`
+  - `els` 객체 바인딩 (getElementById)
+  - 기존 DOMContentLoaded 코드 이동: localStorage 로드, 이벤트 리스너 등록, 초기 UI 상태
+  - **connect/disconnect/bootloader/nickname 이벤트는 등록하지 않음** (app.js가 관리)
+  - BLE connect/disconnect 이벤트 구독: `ble.on('connect', onBleConnect)`, `ble.on('disconnect', onBleDisconnect)`
 
-// app 전역: 모듈에서 사용할 상태/도구
-export { setStatus, setUiConnected };
-```
+- [ ] **Step 2:** `export function destroy()` 작성:
+  - `ble.off('connect', onBleConnect)`, `ble.off('disconnect', onBleDisconnect)`
+  - job interval 정리: `if (job?.intervalId) clearInterval(job.intervalId)`
+  - textSettingsToastTimerId 정리
+  - els 초기화: `els = {}`
 
-- [ ] **Step 2: 커밋**
+- [ ] **Step 3:** 기존 모듈 하단의 자동실행 코드 삭제 (initI18n 호출, DOMContentLoaded 등)
+  - `els` 전역 선언을 `let els = {};`로 변경 (init에서 바인딩)
 
-```bash
-git add web/app.js
-git commit -m "feat: add SPA shell with tab routing (app.js)"
-```
+- [ ] **Step 4:** `setStatus()` / `setUiConnected()` 참조 정리:
+  - `setStatus()`는 모듈 내 로컬로 유지 (metrics stageText 업데이트 용도)
+  - `setUiConnected()`는 connect/disconnect 버튼 제거 후 Start 버튼 활성화만 관리하도록 수정
+
+- [ ] **Step 5: 커밋** — `refactor(text): add init/destroy lifecycle, remove auto-execution`
+
+### Task 13: text.js 정합성 검증 (코드 리뷰)
+
+에이전트 지시: code-reviewer 에이전트로 실행. 다음 항목을 검증하라.
+
+- [ ] **Step 1:** `web/text.js`에서 ble.js API 호출이 `docs/superpowers/plans/ble-api-reference.md`의 export 목록과 일치하는지 확인
+- [ ] **Step 2:** 삭제된 함수가 여전히 호출되고 있지 않은지 확인 (undefined reference 검색)
+- [ ] **Step 3:** init()에서 등록한 이벤트가 destroy()에서 모두 해제되는지 확인
+- [ ] **Step 4:** DOM ID가 text.html과 일치하는지, 다른 모듈과 충돌하지 않는지 확인
+- [ ] **Step 5:** 발견된 문제 수정 및 커밋
 
 ---
 
-## Task 5: index.html — SPA 쉘로 변환
+## Phase 5: files.js 리팩터링 (마이크로 스텝)
 
-**파일:**
-- 수정: `index.html`
+Phase 4와 동일한 패턴을 적용한다.
 
-- [ ] **Step 1: index.html을 SPA 쉘로 변환**
+### Task 14: files.js — BLE import 추가 및 변수 선언 제거
 
-기존 index.html 전체를 교체한다. 구조:
-- 헤더: 탭 네비게이션 (Home, Text Flush, File Flush, Auto Scroll)
-- 공통 사이드바: Device 섹션 (Connect/Disconnect/Bootloader/Nickname)
-- homeSection: 기존 홈 콘텐츠 (카드 3개 포함 Auto Scroll 추가)
-- featureLayout: sidebar + mainContainer (기능 모듈이 렌더링)
+**파일:** `web/files.js`
 
-핵심 변경:
-1. 기존 nav 링크를 hash 기반 `.tabLink`로 변경
-2. homeSection과 featureLayout을 조건부 hidden으로 전환
-3. featureLayout 내에 공통 Device 섹션 + sidebarExtra 컨테이너 + mainContainer
-4. 홈 카드 그리드를 2열에서 3열로 변경(Auto Scroll 카드 추가)
-5. script를 `import { main } from './web/app.js'; main();`으로 변경
+- [ ] **Step 1:** 파일 상단 변경 (Task 9과 동일 패턴):
+  - `import { initI18n, t, getLocale } from './i18n.js';` → `import { t, getLocale } from './i18n.js';`
+  - `import * as ble from './ble.js';` 추가
+  - UUID 상수 7개 삭제 (SERVICE_UUID ~ NICKNAME_CHAR_UUID, MACRO 포함)
+  - `LS_DEVICE_NICKNAME` 삭제
+  - BLE 상태 변수 삭제: `device`, `server`, `flushChar`, `configChar`, `statusChar`, `macroChar`, `bootloaderChar`, `nicknameChar`, `deviceBufCapacity`, `deviceBufFree`, `deviceBufUpdatedAt`, `statusWaiters`
+- [ ] **Step 2: 커밋** — `refactor(files): replace BLE vars with ble.js imports`
 
-index.html의 전체 내용은 이 Task의 Step 1 설명 그대로 구현하면 된다.
-기존 text.html/files.html의 Device 섹션 HTML을 featureLayout 내 공통 사이드바로 한 번만 작성한다.
+### Task 15: files.js — BLE 함수 삭제 및 치환
 
-- [ ] **Step 2: 커밋**
+**파일:** `web/files.js`
 
-```bash
-git add index.html
-git commit -m "feat: convert index.html to SPA shell with tab routing"
-```
+에이전트 지시: `docs/superpowers/plans/ble-api-reference.md`의 치환 규칙 표를 참조하라.
+
+- [ ] **Step 1:** 다음 함수들을 삭제:
+  - `resolveStatusWaiters()`, `handleStatusValue()`, `readStatusOnce()`, `waitForStatusUpdate()`
+  - `sanitizeNickname()`, `loadSavedNickname()`, `saveNicknameToLocalStorage()`, `setNicknameUiValue()`, `readDeviceNicknameOnce()`, `writeDeviceNickname()`
+  - `getConnectFailureHelpText()`, `connect()`, `handleDisconnected()`, `requestBootloader()`, `disconnect()`
+
+- [ ] **Step 2:** 남은 코드에서 BLE 변수 참조 치환 (Task 10과 동일 규칙 + macroChar 추가):
+  - `macroChar` → `ble.getChar(ble.MACRO_CHAR_UUID)`
+
+- [ ] **Step 3:** `waitForStatusUpdate()` 로컬 재정의 (Task 10 Step 3과 동일)
+
+- [ ] **Step 4: 커밋** — `refactor(files): remove BLE functions, apply ble.js substitutions`
+
+### Task 16: files.js — DOM 생성 함수 작성
+
+**파일:** `web/files.js`
+
+에이전트 지시: `web/files.html`의 내용을 읽어서 사이드바와 메인 영역 HTML을 DOM API로 생성하는 함수를 작성하라. Device 섹션 제외.
+
+- [ ] **Step 1:** 두 함수 작성:
+  - `function createFilesSidebar()` — Cautions + Transfer Settings + Notes 섹션
+  - `function createFilesMain()` — 파일 선택 + 버튼 + metrics 영역
+
+- [ ] **Step 2: 커밋** — `feat(files): add DOM creation functions for SPA`
+
+### Task 17: files.js — init()/destroy() 래퍼 및 이벤트 정리
+
+**파일:** `web/files.js`
+
+- [ ] **Step 1:** `export function init(mainContainer, sidebarExtra)` 작성 (Task 12와 동일 패턴)
+- [ ] **Step 2:** `export function destroy()` 작성
+- [ ] **Step 3:** 기존 `boot()` / `init()` 자동실행 코드 삭제
+- [ ] **Step 4:** `wireEvents()`에서 connect/disconnect/bootloader/nickname 이벤트 제거
+- [ ] **Step 5: 커밋** — `refactor(files): add init/destroy lifecycle, remove auto-execution`
+
+### Task 18: files.js 정합성 검증 (코드 리뷰)
+
+Task 13과 동일한 검증을 files.js에 대해 수행.
+
+- [ ] **Step 1~5:** ble.js API 일치, undefined reference, 이벤트 해제, DOM ID 충돌, 문제 수정
 
 ---
 
-## Task 6: style.css — 탭 네비게이션 스타일 추가
+## Phase 6: 마무리
 
-**파일:**
-- 수정: `web/style.css`
+### Task 19: 기존 HTML 파일 삭제
 
-- [ ] **Step 1: 탭 활성 상태 스타일 추가**
+- [ ] **Step 1:** `git rm web/text.html web/files.html`
+- [ ] **Step 2: 커밋** — `chore: remove old HTML files`
 
-파일 끝에 추가:
+### Task 20: 통합 정합성 검증 (코드 리뷰)
 
-```css
-/* SPA tab active state */
-.tabLink {
-  text-decoration: none;
-}
+에이전트 지시: code-reviewer 에이전트로 실행. 전체 SPA를 검증하라.
 
-.tabLink.tabActive {
-  color: var(--accent) !important;
-  font-weight: 700;
-}
-```
-
-- [ ] **Step 2: 커밋**
-
-```bash
-git add web/style.css
-git commit -m "feat: add tab active state styles"
-```
+- [ ] **Step 1:** app.js의 모듈 import 경로 확인
+- [ ] **Step 2:** 모든 모듈의 init/destroy 시그니처 일치 확인
+- [ ] **Step 3:** ble.js 이벤트 등록/해제 쌍 확인 (전체 모듈)
+- [ ] **Step 4:** i18n 키가 lang/*.json에 모두 존재하는지 확인
+- [ ] **Step 5:** 펌웨어 빌드 — `pio run`
+- [ ] **Step 6:** 발견된 문제 수정 및 최종 커밋
 
 ---
 
-## Task 7: scroll.js — Auto Scroll 기능 모듈 작성
-
-**파일:**
-- 생성: `web/scroll.js`
-
-- [ ] **Step 1: scroll.js 작성**
-
-```javascript
-// Auto Scroll Down feature module
-// - Speed slider (30ms ~ 500ms interval)
-// - Start / Stop buttons
-// - BLE command: [cmd(u8)][interval_ms(u16 LE)]
-import { t, applyDom } from './i18n.js';
-import * as ble from './ble.js';
-
-const LS_SCROLL_INTERVAL = 'byteflusher.scrollIntervalMs';
-const DEFAULT_INTERVAL = 100;
-const MIN_INTERVAL = 30;
-const MAX_INTERVAL = 500;
-
-let scrolling = false;
-let els = {};
-let disconnectHandler = null;
-
-function loadInterval() {
-  const raw = localStorage.getItem(LS_SCROLL_INTERVAL);
-  if (raw == null) return DEFAULT_INTERVAL;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return DEFAULT_INTERVAL;
-  return Math.max(MIN_INTERVAL, Math.min(MAX_INTERVAL, n));
-}
-
-function saveInterval(v) {
-  localStorage.setItem(LS_SCROLL_INTERVAL, String(v));
-}
-
-function sliderToInterval(sliderValue) {
-  // 슬라이더 0(빠름) ~ 100(느림) -> interval 30ms ~ 500ms
-  return Math.round(MIN_INTERVAL + (MAX_INTERVAL - MIN_INTERVAL) * (sliderValue / 100));
-}
-
-function intervalToSlider(interval) {
-  return Math.round(((interval - MIN_INTERVAL) / (MAX_INTERVAL - MIN_INTERVAL)) * 100);
-}
-
-function updateSpeedLabel() {
-  if (!els.speedValue) return;
-  const interval = sliderToInterval(Number(els.speedSlider?.value ?? 50));
-  els.speedValue.textContent = `${interval}ms`;
-}
-
-function setScrollingUi(isScrolling) {
-  scrolling = isScrolling;
-  if (els.btnStart) els.btnStart.disabled = isScrolling || !ble.isConnected();
-  if (els.btnStop) els.btnStop.disabled = !isScrolling;
-  if (els.speedSlider) els.speedSlider.disabled = isScrolling;
-  if (els.scrollStatus) {
-    els.scrollStatus.textContent = isScrolling ? t('scroll.statusScrolling') : t('scroll.statusStopped');
-  }
-}
-
-async function sendScrollCommand(cmd, intervalMs) {
-  const sc = ble.getChar(ble.SCROLL_CHAR_UUID);
-  if (!sc) return;
-  const buf = new Uint8Array(3);
-  buf[0] = cmd;
-  buf[1] = intervalMs & 0xff;
-  buf[2] = (intervalMs >> 8) & 0xff;
-  await sc.writeValue(buf);
-}
-
-async function handleStart() {
-  if (!ble.isConnected()) return;
-  const interval = sliderToInterval(Number(els.speedSlider?.value ?? 50));
-  saveInterval(interval);
-  try {
-    await sendScrollCommand(0x01, interval);
-    setScrollingUi(true);
-  } catch (err) {
-    // 오류 시 상태 유지
-  }
-}
-
-async function handleStop() {
-  try {
-    await sendScrollCommand(0x00, 0);
-  } catch {
-    // BLE 끊김 등 무시
-  }
-  setScrollingUi(false);
-}
-
-function onDisconnect() {
-  setScrollingUi(false);
-}
-
-function onConnect() {
-  setScrollingUi(false);
-}
-
-// --- DOM 생성 헬퍼 ---
-function createSidebarContent(savedInterval) {
-  const sliderVal = intervalToSlider(savedInterval);
-  const section = document.createElement('section');
-  section.className = 'card';
-
-  const title = document.createElement('h2');
-  title.className = 'sidebarTitle';
-  title.setAttribute('data-i18n', 'scroll.speed');
-  title.textContent = 'Scroll Speed';
-  section.appendChild(title);
-
-  const grid = document.createElement('div');
-  grid.className = 'grid2';
-
-  // 슬라이더 행
-  const sliderRow = document.createElement('div');
-  sliderRow.style.cssText = 'display: flex; align-items: center; gap: 8px;';
-
-  const fastLabel = document.createElement('span');
-  fastLabel.className = 'muted small';
-  fastLabel.setAttribute('data-i18n', 'scroll.speedFast');
-  fastLabel.textContent = 'Fast';
-
-  const slider = document.createElement('input');
-  slider.id = 'scrollSpeedSlider';
-  slider.type = 'range';
-  slider.min = '0';
-  slider.max = '100';
-  slider.value = String(sliderVal);
-  slider.style.flex = '1';
-
-  const slowLabel = document.createElement('span');
-  slowLabel.className = 'muted small';
-  slowLabel.setAttribute('data-i18n', 'scroll.speedSlow');
-  slowLabel.textContent = 'Slow';
-
-  sliderRow.append(fastLabel, slider, slowLabel);
-  grid.appendChild(sliderRow);
-
-  // 값 표시
-  const valueDiv = document.createElement('div');
-  valueDiv.className = 'muted small';
-  valueDiv.style.textAlign = 'center';
-  const valueSpan = document.createElement('span');
-  valueSpan.id = 'scrollSpeedValue';
-  valueSpan.textContent = `${savedInterval}ms`;
-  valueDiv.appendChild(valueSpan);
-  grid.appendChild(valueDiv);
-
-  section.appendChild(grid);
-
-  // 참고 문구
-  const note = document.createElement('p');
-  note.className = 'muted small';
-  note.style.marginTop = '8px';
-  note.setAttribute('data-i18n', 'scroll.noteScroll');
-  note.textContent = 'Scroll speed is set before starting and cannot be changed during scrolling.';
-  section.appendChild(note);
-
-  return section;
-}
-
-function createMainContent() {
-  const fragment = document.createDocumentFragment();
-
-  const title = document.createElement('h2');
-  title.className = 'settingsTitle';
-  title.style.marginTop = '0';
-  title.setAttribute('data-i18n', 'scroll.title');
-  title.textContent = 'Auto Scroll Down';
-  fragment.appendChild(title);
-
-  // 버튼 행
-  const row = document.createElement('div');
-  row.className = 'row';
-  row.style.marginTop = '24px';
-
-  const btnStart = document.createElement('button');
-  btnStart.id = 'scrollBtnStart';
-  btnStart.className = 'primary controlButton';
-  btnStart.disabled = true;
-  btnStart.setAttribute('data-i18n', 'scroll.start');
-  btnStart.textContent = 'Start';
-
-  const btnStop = document.createElement('button');
-  btnStop.id = 'scrollBtnStop';
-  btnStop.className = 'danger controlButton';
-  btnStop.disabled = true;
-  btnStop.setAttribute('data-i18n', 'scroll.stop');
-  btnStop.textContent = 'Stop';
-
-  row.append(btnStart, btnStop);
-  fragment.appendChild(row);
-
-  // 힌트
-  const hint = document.createElement('div');
-  hint.className = 'muted small';
-  hint.id = 'scrollHint';
-  hint.style.marginTop = '8px';
-  fragment.appendChild(hint);
-
-  // 상태
-  const statusDiv = document.createElement('div');
-  statusDiv.style.marginTop = '16px';
-  const statusLabel = document.createElement('span');
-  statusLabel.className = 'label';
-  statusLabel.setAttribute('data-i18n', 'common.status');
-  statusLabel.textContent = 'Status';
-  const statusValue = document.createElement('span');
-  statusValue.id = 'scrollStatus';
-  statusValue.className = 'muted small';
-  statusValue.setAttribute('data-i18n', 'scroll.statusStopped');
-  statusValue.textContent = ' Stopped';
-  statusDiv.append(statusLabel, document.createTextNode(' '), statusValue);
-  fragment.appendChild(statusDiv);
-
-  return fragment;
-}
-
-// --- init / destroy ---
-export function init(mainContainer, sidebarExtra) {
-  const savedInterval = loadInterval();
-
-  // 사이드바: Speed 설정 (DOM API 사용)
-  sidebarExtra.appendChild(createSidebarContent(savedInterval));
-
-  // 메인: Start/Stop + Status (DOM API 사용)
-  mainContainer.appendChild(createMainContent());
-
-  // DOM 참조
-  els = {
-    speedSlider: document.getElementById('scrollSpeedSlider'),
-    speedValue: document.getElementById('scrollSpeedValue'),
-    btnStart: document.getElementById('scrollBtnStart'),
-    btnStop: document.getElementById('scrollBtnStop'),
-    scrollStatus: document.getElementById('scrollStatus'),
-    scrollHint: document.getElementById('scrollHint'),
-  };
-
-  // 이벤트 바인딩
-  els.speedSlider?.addEventListener('input', () => {
-    updateSpeedLabel();
-  });
-
-  els.btnStart?.addEventListener('click', handleStart);
-  els.btnStop?.addEventListener('click', handleStop);
-
-  // BLE 이벤트
-  disconnectHandler = onDisconnect;
-  ble.on('disconnect', disconnectHandler);
-  ble.on('connect', onConnect);
-
-  // 초기 상태
-  setScrollingUi(false);
-
-  // 연결 상태에 따라 Start 활성화
-  if (ble.isConnected()) {
-    els.btnStart.disabled = false;
-  } else {
-    if (els.scrollHint) els.scrollHint.textContent = t('scroll.connectFirst');
-  }
-
-  // i18n 적용
-  applyDom(sidebarExtra);
-  applyDom(mainContainer);
-}
-
-export function destroy() {
-  // 스크롤 중이면 정지
-  if (scrolling) {
-    sendScrollCommand(0x00, 0).catch(() => {});
-    scrolling = false;
-  }
-
-  // 이벤트 해제
-  if (disconnectHandler) {
-    ble.off('disconnect', disconnectHandler);
-    ble.off('connect', onConnect);
-    disconnectHandler = null;
-  }
-
-  els = {};
-}
-```
-
-- [ ] **Step 2: 커밋**
-
-```bash
-git add web/scroll.js
-git commit -m "feat: add auto scroll down module (scroll.js)"
-```
-
----
-
-## Task 8: text.js — init()/destroy() 패턴으로 리팩터링
-
-**파일:**
-- 수정: `web/text.js`
-
-이 태스크는 가장 큰 리팩터링이다. text.js의 핵심 변경:
-
-1. BLE UUID 상수, 연결 상태 변수, connect/disconnect/reconnect 함수를 **삭제**하고 `ble.js`에서 import
-2. `els` 객체를 전역이 아니라 `init()` 내에서 DOM 생성 후 바인딩
-3. 기존 text.html의 사이드바(Cautions, Transfer Settings, Notes) HTML을 `init()`에서 sidebarExtra에 DOM API로 삽입
-4. 기존 text.html의 메인 영역(textarea, 버튼, metrics) HTML을 `init()`에서 mainContainer에 DOM API로 삽입
-5. `init(mainContainer, sidebarExtra)` / `destroy()` export
-6. 기존 DOMContentLoaded 이벤트 초기화 로직을 init()으로 이동
-
-- [ ] **Step 1: text.js 리팩터링**
-
-파일 전체를 다음과 같이 변경한다:
-
-1. 파일 상단의 UUID 상수들(SERVICE_UUID ~ NICKNAME_CHAR_UUID) 삭제, `import * as ble from './ble.js';` 로 대체
-2. BLE 연결 상태 변수(device, server, flushChar, configChar, statusChar, bootloaderChar, nicknameChar, deviceBufCapacity, deviceBufFree, deviceBufUpdatedAt, statusWaiters) 삭제, `ble.getChar()`, `ble.getDeviceBufFree()` 등으로 대체
-3. connect(), disconnect(), reconnectLoop(), requestBootloader(), 닉네임 관련 함수(sanitizeNickname, loadSavedNickname, saveNicknameToLocalStorage, setNicknameUiValue, readDeviceNicknameOnce, writeDeviceNickname) 삭제, ble.js 사용
-4. handleStatusValue, readStatusOnce, resolveStatusWaiters 삭제, ble.js 사용
-5. 모든 코드를 모듈 스코프 변수 + `init()`/`destroy()` 패턴으로 감싸기
-6. 기존 text.html의 사이드바 HTML을 `init()`에서 sidebarExtra에 DOM API로 삽입
-7. 기존 text.html의 메인 영역 HTML을 `init()`에서 mainContainer에 DOM API로 삽입
-8. 기존 DOMContentLoaded 이벤트 초기화 로직을 init()으로 이동
-9. `destroy()`에서: 이벤트 리스너 해제, 타이머(interval) 정리, BLE 이벤트 해제
-
-**치환 규칙:**
-- `flushChar` -> `ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)`
-- `configChar` -> `ble.getChar(ble.CONFIG_CHAR_UUID)`
-- `statusChar` -> `ble.getChar(ble.STATUS_CHAR_UUID)`
-- `device?.gatt?.connected` -> `ble.isConnected()`
-- `device.name` -> `ble.getDeviceName()`
-- `deviceBufFree` -> `ble.getDeviceBufFree()`
-- `deviceBufCapacity` -> `ble.getDeviceBufCapacity()`
-- `deviceBufUpdatedAt` -> `ble.getDeviceBufUpdatedAt()`
-- `readStatusOnce()` -> `ble.readStatusOnce()`
-- `statusWaiters.push(fn)` -> `ble.addStatusWaiter(fn)`
-- reconnectLoop 내부의 characteristic 재획득은 `ble.reconnect()` 한 줄로 대체
-- connect/disconnect 버튼 이벤트는 제거 (app.js가 관리)
-
-**참고사항:**
-- 기존의 비즈니스 로직(flushText, preprocessTextForFirmware, 한글 매핑, metrics 등)은 그대로 유지
-- 기존 코드가 크므로(약 1100 lines), 구조만 변경하고 비즈니스 로직은 건드리지 않는다
-- DOM 생성은 DOM API (createElement/appendChild)를 사용하여 XSS 위험을 제거한다
-
-- [ ] **Step 2: 빌드/동작 확인**
-
-브라우저에서 index.html을 열어 #text 탭에서 기존 Text Flush 기능이 정상 동작하는지 확인. 빌드 툴이 없으므로 수동 확인.
-
-- [ ] **Step 3: 커밋**
-
-```bash
-git add web/text.js
-git commit -m "refactor: convert text.js to init/destroy pattern using ble.js"
-```
-
----
-
-## Task 9: files.js — init()/destroy() 패턴으로 리팩터링
-
-**파일:**
-- 수정: `web/files.js`
-
-Task 8과 동일한 패턴을 files.js에 적용한다.
-
-- [ ] **Step 1: files.js 리팩터링**
-
-text.js와 동일한 변경:
-1. UUID 상수 삭제, `import * as ble from './ble.js';`
-2. BLE 연결 상태 변수 삭제, ble.js API 사용
-3. connect/disconnect/reconnect 함수 삭제, ble.js 사용
-4. 닉네임, 부트로더, status 관련 함수 삭제, ble.js 사용
-5. `init(mainContainer, sidebarExtra)` / `destroy()` export
-6. 기존 files.html의 사이드바/메인 HTML을 JS에서 DOM API로 생성
-
-**추가 참고:**
-- files.js에는 `macroChar`도 있으므로 `ble.getChar(ble.MACRO_CHAR_UUID)`로 치환
-- 기존 files.js의 비즈니스 로직(PowerShell 자동화, Base64 처리, SHA-256 검증 등)은 모두 그대로 유지
-- DOM 생성은 DOM API (createElement/appendChild)를 사용
-
-- [ ] **Step 2: 커밋**
-
-```bash
-git add web/files.js
-git commit -m "refactor: convert files.js to init/destroy pattern using ble.js"
-```
-
----
-
-## Task 10: 기존 HTML 파일 삭제 및 i18n basePath 정리
-
-**파일:**
-- 삭제: `web/text.html`
-- 삭제: `web/files.html`
-- 확인: `web/i18n.js`
-
-- [ ] **Step 1: text.html, files.html 삭제**
-
-```bash
-git rm web/text.html web/files.html
-```
-
-- [ ] **Step 2: i18n.js 확인**
-
-현재 i18n.js의 `initI18n({ basePath })` 기본값은 `'..'`이다. SPA에서는 `'.'`으로 호출하므로 변경 불필요 (app.js에서 `initI18n({ basePath: '.' })` 호출).
-
-text.js/files.js 상단에서 `initI18n()`을 호출하던 부분이 있다면 삭제 확인 (app.js에서 한 번만 호출).
-
-- [ ] **Step 3: 커밋**
-
-```bash
-git add -A
-git commit -m "chore: remove old HTML files, finalize SPA structure"
-```
-
----
-
-## Task 11: 통합 테스트 및 최종 확인
-
-- [ ] **Step 1: 펌웨어 빌드 확인**
-
-```bash
-cd /home/aidan/projects/src-byte-flusher && pio run
-```
-
-기대: 컴파일 성공
-
-- [ ] **Step 2: 웹 UI 확인 (브라우저)**
-
-각 탭의 동작을 확인:
-1. Home (#) — 카드 3개 표시 (Text Flush, File Flush, Auto Scroll)
-2. Text Flush (#text) — 사이드바(Settings/Cautions/Notes) + 메인(textarea/버튼/metrics)
-3. File Flush (#files) — 사이드바(Settings/Cautions/Notes) + 메인(파일선택/버튼/metrics)
-4. Auto Scroll (#scroll) — 사이드바(Speed) + 메인(Start/Stop/Status)
-5. 탭 전환 시 BLE 연결 유지 확인
-6. BLE 연결/해제가 모든 탭에서 공통으로 동작
-
-- [ ] **Step 3: 최종 커밋 (필요 시)**
-
-모든 확인 후 필요한 수정 사항 반영.
+## 실행 가이드
+
+### 병렬 가능한 태스크
+- Task 1, 2, 3, 5는 서로 독립적 → 병렬 실행 가능
+- Task 4는 Task 3 (API 레퍼런스) 완료 후
+
+### 순차 실행이 필요한 태스크
+- Task 6, 7 → Task 4 완료 후
+- Task 8 → Task 6, 7 완료 후
+- Task 9~13 → Task 8 완료 후 (순차)
+- Task 14~18 → Task 13 완료 후 (순차)
+- Task 19, 20 → Task 18 완료 후
+
+### 검증 게이트 (반드시 통과해야 다음 Phase 진행)
+- Phase 1 완료 → `pio run` 성공
+- Phase 4 완료 → Task 13 코드 리뷰 통과
+- Phase 5 완료 → Task 18 코드 리뷰 통과
+- Phase 6 완료 → Task 20 통합 검증 통과
