@@ -41,54 +41,104 @@
         <div class="topHeaderRow">
           <h1 class="topHeaderTitle">🤖 Byte Flusher</h1>
           <nav class="topHeaderNav muted" aria-label="Primary">
-            <a href="./web/text.html" style="color: inherit;">Text Flush</a>
+            <a href="#" class="tabLink" style="color: inherit;">Home</a>
             ·
-            <a href="./web/files.html" style="color: inherit;">File Flush</a>
+            <a href="#text" class="tabLink" style="color: inherit;">Text Flush</a>
+            ·
+            <a href="#files" class="tabLink" style="color: inherit;">File Flush</a>
+            ·
+            <a href="#scroll" class="tabLink" style="color: inherit;">Auto Scroll</a>
             ·
             <a href="./docs/" style="color: inherit;">Docs</a>
             ·
             <a href="https://github.com/AidanPark/byteflusher" rel="noopener" target="_blank" style="color: inherit;">GitHub</a>
-            ·
-            <a href="https://github.com/AidanPark/byteflusher#-빠른-시작-사용-방법" rel="noopener" target="_blank" style="color: inherit;">Usage</a>
           </nav>
         </div>
         <p class="muted" style="padding-top: 26px; font-size: 16px; line-height: 1.5;" data-i18n="home.description">Send text via BLE (Web Bluetooth) to the Flusher, which types it accurately on the Target PC as USB keyboard (HID) input.</p>
       </header>
 
-      <section class="card" style="margin-top: 10px;">
-        <h2 class="sidebarTitle" style="margin-bottom: 8px;" data-i18n="home.cautionsTitle">Cautions (Important)</h2>
-        <ul class="muted" style="margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.55;">
-          <li data-i18n="home.caution1">Intended for testing/development automation/demo purposes on systems you own/manage or in explicitly authorized environments.</li>
-          <li data-i18n="home.caution2">Do not use for unauthorized access, security bypass, unauthorized input, or any illegal/unethical purpose.</li>
-          <li data-i18n="home.caution3">Due to keyboard input automation, input may go to unintended locations due to focus changes/popups/UAC/notifications. Verify in a test environment first.</li>
-        </ul>
+      <section id="homeSection">
+        <section class="card" style="margin-top: 10px;">
+          <h2 class="sidebarTitle" style="margin-bottom: 8px;" data-i18n="home.cautionsTitle">Cautions (Important)</h2>
+          <ul class="muted" style="margin: 0; padding-left: 18px; font-size: 14px; line-height: 1.55;">
+            <li data-i18n="home.caution1">Intended for testing/development automation/demo purposes on systems you own/manage or in explicitly authorized environments.</li>
+            <li data-i18n="home.caution2">Do not use for unauthorized access, security bypass, unauthorized input, or any illegal/unethical purpose.</li>
+            <li data-i18n="home.caution3">Due to keyboard input automation, input may go to unintended locations due to focus changes/popups/UAC/notifications. Verify in a test environment first.</li>
+          </ul>
+        </section>
+
+        <section class="card" style="margin-top: 14px;">
+          <ul class="muted" style="margin: 0; padding-left: 18px; font-size: 16px; line-height: 1.55;">
+            <li>Control PC: Chrome/Edge (Web Bluetooth)</li>
+            <li data-i18n="home.archFlusher">Flusher: BLE receive → buffer → USB HID keyboard output</li>
+            <li data-i18n="home.archTarget">Target PC: Receives USB keyboard input to create text/scripts</li>
+          </ul>
+        </section>
+
+        <section style="margin-top: 18px; display: flex; justify-content: center;">
+          <div style="width: min(920px, 100%); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 42px;">
+            <a href="#text" class="card" style="color: inherit; text-decoration: none; display: block; padding: 45px 18px; text-align: center;">
+              <div style="font-size: 22px; font-weight: 700;" data-i18n="home.textFlush">📄 Text Flush</div>
+              <div class="muted" style="margin-top: 10px; font-size: 16px;" data-i18n="home.textFlushDesc">Send text via BLE to type on Target PC</div>
+            </a>
+            <a href="#files" class="card" style="color: inherit; text-decoration: none; display: block; padding: 45px 18px; text-align: center;">
+              <div style="font-size: 22px; font-weight: 700;" data-i18n="home.fileFlush">📁 File Flush</div>
+              <div class="muted" style="margin-top: 10px; font-size: 16px;" data-i18n="home.fileFlushDesc">Create/verify files on Target PC via script</div>
+            </a>
+            <a href="#scroll" class="card" style="color: inherit; text-decoration: none; display: block; padding: 45px 18px; text-align: center;">
+              <div style="font-size: 22px; font-weight: 700;" data-i18n="home.autoScroll">🔽 Auto Scroll</div>
+              <div class="muted" style="margin-top: 10px; font-size: 16px;" data-i18n="home.autoScrollDesc">Auto scroll down on Target PC</div>
+            </a>
+          </div>
+        </section>
       </section>
 
-      <section class="card" style="margin-top: 14px;">
-        <ul class="muted" style="margin: 0; padding-left: 18px; font-size: 16px; line-height: 1.55;">
-          <li>Control PC: Chrome/Edge (Web Bluetooth)</li>
-          <li data-i18n="home.archFlusher">Flusher: BLE receive → buffer → USB HID keyboard output</li>
-          <li data-i18n="home.archTarget">Target PC: Receives USB keyboard input to create text/scripts</li>
-        </ul>
-      </section>
+      <div id="featureLayout" class="layout" hidden>
+        <aside class="sidebar">
+          <!-- Common Device section -->
+          <section class="card">
+            <div class="cardHeaderRow">
+              <h2 class="sidebarTitle" style="margin: 0;" data-i18n="common.device">Device</h2>
+            </div>
+            <fieldset id="deviceFieldset">
+              <div class="row">
+                <button id="btnConnect" class="primary" data-i18n="common.connect">Connect Device</button>
+                <button id="btnDisconnect" disabled data-i18n="common.disconnect">Disconnect</button>
+                <button id="btnBootloader" class="danger" disabled data-i18n="common.bootloader">Enter Bootloader</button>
+              </div>
+              <div class="grid2" style="margin-top: 10px;">
+                <label class="inline" style="width: 100%; justify-content: space-between;">
+                  <span data-i18n="common.nickname">Nickname</span>
+                  <input id="deviceNickname" class="textField" type="text" maxlength="12" placeholder="e.g. aidan" data-i18n-placeholder="common.nicknamePlaceholderText" />
+                </label>
+                <p class="muted small" style="margin: -2px 0 0;" data-i18n="common.nicknameHint">
+                  Saved to board; reflected in advertising name (alphanumeric/-/_).
+                </p>
+              </div>
+              <div class="row" style="margin-top: 8px;">
+                <button id="btnApplyNickname" type="button" disabled data-i18n="common.saveNickname">Save Nickname</button>
+              </div>
+            </fieldset>
+            <div class="status">
+              <div><span class="label" data-i18n="common.status">Status</span> <span id="statusText" data-i18n="status.disconnected">Disconnected</span></div>
+              <div class="muted small" id="detailsText"></div>
+            </div>
+          </section>
 
-      <section style="margin-top: 18px; display: flex; justify-content: center;">
-        <div style="width: min(920px, 100%); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 42px;">
-          <a href="./web/text.html" class="card" style="color: inherit; text-decoration: none; display: block; padding: 45px 18px; text-align: center;">
-            <div style="font-size: 22px; font-weight: 700;" data-i18n="home.textFlush">📄 Text Flush</div>
-            <div class="muted" style="margin-top: 10px; font-size: 16px;" data-i18n="home.textFlushDesc">Send text via BLE to type on Target PC</div>
-          </a>
-          <a href="./web/files.html" class="card" style="color: inherit; text-decoration: none; display: block; padding: 45px 18px; text-align: center;">
-            <div style="font-size: 22px; font-weight: 700;" data-i18n="home.fileFlush">📁 File Flush</div>
-            <div class="muted" style="margin-top: 10px; font-size: 16px;" data-i18n="home.fileFlushDesc">Create/verify files on Target PC via script</div>
-          </a>
-        </div>
-      </section>
+          <!-- Tab-specific sidebar container -->
+          <div id="sidebarExtra"></div>
+        </aside>
+
+        <!-- Tab-specific main container -->
+        <section class="main">
+          <section class="card" id="mainContainer"></section>
+        </section>
+      </div>
     </main>
 
     <script type="module">
-      import { initI18n } from './web/i18n.js';
-      await initI18n({ basePath: '.' });
+      import { main } from './web/app.js';
+      main();
     </script>
   </body>
 </html>
