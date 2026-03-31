@@ -432,3 +432,13 @@ textarea:focus {
     position: static;
   }
 }
+
+/* SPA tab active state */
+.tabLink {
+  text-decoration: none;
+}
+
+.tabLink.tabActive {
+  color: var(--accent) !important;
+  font-weight: 700;
+}
