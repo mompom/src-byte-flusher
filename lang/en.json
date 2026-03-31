@@ -143,7 +143,9 @@
     "textFlush": "\ud83d\udcc4 Text Flush",
     "textFlushDesc": "Send text via BLE to type on Target PC",
     "fileFlush": "\ud83d\udcc1 File Flush",
-    "fileFlushDesc": "Create/verify files on Target PC via script"
+    "fileFlushDesc": "Create/verify files on Target PC via script",
+    "autoScroll": "🔽 Auto Scroll",
+    "autoScrollDesc": "Auto scroll down on Target PC"
   },
 
   "text": {
@@ -322,5 +324,18 @@
     "keyPressDelayHint": "How long a key is held down. Too short may not register in some environments.",
     "timingNote": "These values affect the actual typing speed/stability on the board (USB HID).",
     "inputSettings": "Input Settings"
+  },
+
+  "scroll": {
+    "title": "Auto Scroll Down",
+    "speed": "Scroll Speed",
+    "speedSlow": "Slow",
+    "speedFast": "Fast",
+    "start": "Start",
+    "stop": "Stop",
+    "statusScrolling": "Scrolling...",
+    "statusStopped": "Stopped",
+    "connectFirst": "Connect a device first.",
+    "noteScroll": "Scroll speed is set before starting and cannot be changed during scrolling."
   }
 }

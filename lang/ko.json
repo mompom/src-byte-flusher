@@ -143,7 +143,9 @@
     "textFlush": "📄 텍스트 Flush",
     "textFlushDesc": "텍스트를 BLE로 보내서 Target PC에 타이핑",
     "fileFlush": "📁 파일 Flush",
-    "fileFlushDesc": "Target PC에서 스크립트로 파일 생성/검증"
+    "fileFlushDesc": "Target PC에서 스크립트로 파일 생성/검증",
+    "autoScroll": "🔽 자동 스크롤",
+    "autoScrollDesc": "Target PC에서 자동으로 아래로 스크롤"
   },
 
   "text": {
@@ -322,5 +324,18 @@
     "keyPressDelayHint": "키를 \"누르고 있는 시간\"입니다. 너무 짧으면 일부 환경에서 눌림이 인식되지 않을 수 있습니다.",
     "timingNote": "위 값들은 보드(USB HID)의 실제 타이핑 속도/안정성에 영향을 줍니다.",
     "inputSettings": "입력설정"
+  },
+
+  "scroll": {
+    "title": "자동 스크롤 다운",
+    "speed": "스크롤 속도",
+    "speedSlow": "느림",
+    "speedFast": "빠름",
+    "start": "시작",
+    "stop": "정지",
+    "statusScrolling": "스크롤 중...",
+    "statusStopped": "정지됨",
+    "connectFirst": "장치를 먼저 연결하세요.",
+    "noteScroll": "스크롤 속도는 시작 전에 설정하며, 스크롤 중에는 변경할 수 없습니다."
   }
 }
