@@ -84,118 +84,23 @@ function showTextSettingsToast(text, ttlMs = 1000) {
 }
 
 
-function resolveStatusWaiters() {
-  const waiters = statusWaiters;
-  statusWaiters = [];
-  for (const fn of waiters) {
-    try {
-      fn();
-    } catch {
-      // ignore
-    }
-  }
-}
-
-function handleStatusValue(dataView) {
-  if (!dataView) return;
-  if (dataView.byteLength < 4) return;
-  const cap = dataView.getUint16(0, true);
-  const free = dataView.getUint16(2, true);
-  if (Number.isFinite(cap) && cap > 0) deviceBufCapacity = cap;
-  if (Number.isFinite(free) && free >= 0) deviceBufFree = free;
-  deviceBufUpdatedAt = performance.now();
-  resolveStatusWaiters();
-}
-
-function sanitizeNickname(raw) {
-  const s = String(raw ?? '').trim();
-  return s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12);
-}
-
-function loadSavedNickname() {
-  return sanitizeNickname(localStorage.getItem(LS_DEVICE_NICKNAME) || '');
-}
-
-function saveNicknameToLocalStorage(v) {
-  const s = sanitizeNickname(v);
-  if (s) localStorage.setItem(LS_DEVICE_NICKNAME, s);
-  else localStorage.removeItem(LS_DEVICE_NICKNAME);
-}
-
-function setNicknameUiValue(v) {
-  if (!els.deviceNickname) return;
-  els.deviceNickname.value = sanitizeNickname(v);
-}
-
-async function readDeviceNicknameOnce() {
-  if (!nicknameChar) return '';
-  try {
-    const v = await nicknameChar.readValue();
-    const u8 = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
-    const s = new TextDecoder().decode(u8);
-    return sanitizeNickname(s);
-  } catch {
-    return '';
-  }
-}
-
-async function writeDeviceNickname(nickname) {
-  if (!nicknameChar) {
-    setStatus(t('status.error'), t('error.noNicknameChar'));
-    return;
-  }
-
-  const raw = String(nickname ?? '').trim();
-  const s = sanitizeNickname(raw);
-  if (raw && !s) {
-    setStatus(t('status.error'), t('error.nicknameInvalid'));
-    return;
-  }
-  try {
-    if (!s) {
-      await nicknameChar.writeValue(Uint8Array.of(0));
-    } else {
-      await nicknameChar.writeValue(new TextEncoder().encode(s));
-    }
-    saveNicknameToLocalStorage(s);
-    setNicknameUiValue(s);
-    setStatus(t('status.connected'), t('status.nicknameSaved', { name: s || '-' }));
-  } catch (err) {
-    const msg = err?.message ?? String(err ?? '');
-    setStatus(t('status.error'), t('status.nicknameSaveFailed', { msg }));
-  }
-}
-
-async function readStatusOnce() {
-  if (!statusChar) return;
-  try {
-    const v = await statusChar.readValue();
-    handleStatusValue(v);
-  } catch {
-    // ignore
-  }
-}
-
 function waitForStatusUpdate(timeoutMs) {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, timeoutMs);
-    statusWaiters.push(() => {
-      clearTimeout(t);
-      resolve();
-    });
+    const timer = setTimeout(resolve, timeoutMs);
+    ble.addStatusWaiter(() => { clearTimeout(timer); resolve(); });
   });
 }
 
 async function waitForDeviceRoom({ requiredBytes, maxBacklogBytes }) {
-  if (!statusChar) return;
+  if (!ble.getChar(ble.STATUS_CHAR_UUID)) return;
   const startedAt = performance.now();
 
   while (!stopRequested) {
     if (paused) return;
-    if (!device?.gatt?.connected) return;
+    if (!ble.isConnected()) return;
 
-    const cap = deviceBufCapacity;
-    const free = deviceBufFree;
+    const cap = ble.getDeviceBufCapacity();
+    const free = ble.getDeviceBufFree();
     if (Number.isFinite(cap) && Number.isFinite(free)) {
       const used = Math.max(0, cap - free);
       const enoughFree = free >= requiredBytes;
@@ -205,8 +110,8 @@ async function waitForDeviceRoom({ requiredBytes, maxBacklogBytes }) {
 
     // notify가 누락될 수 있으니, 주기적으로 read로 폴백한다.
     const now = performance.now();
-    if (!Number.isFinite(deviceBufUpdatedAt) || now - deviceBufUpdatedAt > 800) {
-      await readStatusOnce();
+    if (!Number.isFinite(ble.getDeviceBufUpdatedAt()) || now - ble.getDeviceBufUpdatedAt() > 800) {
+      await ble.readStatusOnce();
     }
 
     // 너무 오래 기다리면 UX가 이상해지므로 가벼운 타임아웃 이후에도 계속 폴링/대기.
@@ -366,7 +271,7 @@ function setStartChecklist(text) {
 
 function updateStartEnabled() {
   // Match Files page UX: show hint + checklist even before connection.
-  const isConnected = Boolean(device?.gatt?.connected);
+  const isConnected = Boolean(ble.isConnected());
   const isRunning = Boolean(flushInProgress);
 
   const rawText = els.textInput?.value ?? '';
@@ -593,8 +498,8 @@ function setStatus(text, details = '') {
 function setUiConnected(connected) {
   els.btnConnect.disabled = connected;
   els.btnDisconnect.disabled = !connected;
-  if (els.btnBootloader) els.btnBootloader.disabled = !connected || !bootloaderChar;
-  if (els.btnApplyNickname) els.btnApplyNickname.disabled = !connected || !nicknameChar;
+  if (els.btnBootloader) els.btnBootloader.disabled = !connected || !ble.getChar(ble.BOOTLOADER_CHAR_UUID);
+  if (els.btnApplyNickname) els.btnApplyNickname.disabled = !connected || !ble.getChar(ble.NICKNAME_CHAR_UUID);
   if (els.btnPause) els.btnPause.disabled = true;
   if (els.btnResume) els.btnResume.disabled = true;
   if (els.btnApplyDeviceSettings) {
@@ -620,10 +525,10 @@ function setUiRunState({ running, paused: isPaused }) {
 
   setJobPaused(isPaused);
 
-  const isConnected = Boolean(device?.gatt?.connected);
+  const isConnected = Boolean(ble.isConnected());
   els.btnConnect.disabled = running || isConnected;
   els.btnDisconnect.disabled = running ? true : !isConnected;
-  if (els.btnBootloader) els.btnBootloader.disabled = running || !isConnected || !bootloaderChar;
+  if (els.btnBootloader) els.btnBootloader.disabled = running || !isConnected || !ble.getChar(ble.BOOTLOADER_CHAR_UUID);
 
   if (els.btnPause) els.btnPause.disabled = !running || !isConnected || isPaused;
   if (els.btnResume) els.btnResume.disabled = !running || !isConnected || !isPaused;
@@ -726,184 +631,14 @@ function preprocessTextForFirmware(input) {
   return { text: out, replacedCount, replacement };
 }
 
-function getConnectFailureHelpText(err) {
-  const name = (err?.name ?? '').toString();
-  const msg = (err?.message ?? String(err ?? '')).toString();
-
-  if (/No\s+Characteristics\s+matching\s+UUID/i.test(msg) || /No\s+Services\s+matching\s+UUID/i.test(msg)) {
-    return t('error.gattNotFound');
-  }
-
-  if (name === 'NotSupportedError') {
-    return t('error.notSupported');
-  }
-
-  if (name === 'NotAllowedError') {
-    return t('error.notAllowed');
-  }
-
-  return t('error.connectFailed', { msg });
-}
-
-async function connect() {
-  if (!navigator.bluetooth) {
-    throw new Error(t('error.noWebBluetooth'));
-  }
-
-  setStatus(t('status.selectingDevice'), t('status.selectDevicePopup'));
-
-  const requestOptions = {
-    // 동일한 BLE 장치가 많이 잡히는 환경에서 선택을 쉽게 한다.
-    // - 펌웨어는 "ByteFlusher-XXXX" 형태로 광고 이름을 내보낸다.
-    // - 서비스 UUID 필터로 다른 장치를 최대한 숨긴다.
-    filters: [{ services: [SERVICE_UUID] }, { namePrefix: 'ByteFlusher' }],
-    optionalServices: [SERVICE_UUID],
-  };
-
-  try {
-    device = await navigator.bluetooth.requestDevice(requestOptions);
-  } catch (err) {
-    // 사용자가 취소한 경우 등은 조용히 기존 상태를 유지한다.
-    const name = (err?.name ?? '').toString();
-    if (name === 'NotFoundError') {
-      setStatus(t('status.disconnected'), '');
-      setUiConnected(false);
-      return;
-    }
-    throw err;
-  }
-
-  device.addEventListener('gattserverdisconnected', () => {
-    if (flushInProgress && !stopRequested) {
-      if (paused) {
-        setStatus(t('status.connectionLost'), t('status.connectionLostWhilePaused'));
-      } else {
-        setStatus(t('status.connectionLost'), t('status.connectionLostWhileTransfer'));
-      }
-    } else {
-      setStatus(t('status.disconnected'), '');
-    }
-    setUiConnected(false);
-    server = null;
-    flushChar = null;
-    configChar = null;
-    statusChar = null;
-    bootloaderChar = null;
-    nicknameChar = null;
-    deviceBufCapacity = null;
-    deviceBufFree = null;
-    deviceBufUpdatedAt = 0;
-    resolveStatusWaiters();
-  });
-
-  setStatus(t('status.connecting'), device.name ?? '');
-  let service = null;
-  try {
-    server = await device.gatt.connect();
-
-    service = await server.getPrimaryService(SERVICE_UUID);
-    flushChar = await service.getCharacteristic(FLUSH_TEXT_CHAR_UUID);
-  } catch (err) {
-    setStatus(t('status.connectionFailed'), getConnectFailureHelpText(err));
-    setUiConnected(false);
-    updateStartEnabled();
-    return;
-  }
-  try {
-    configChar = await service.getCharacteristic(CONFIG_CHAR_UUID);
-  } catch {
-    configChar = null;
-  }
-
-  try {
-    statusChar = await service.getCharacteristic(STATUS_CHAR_UUID);
-    statusChar.addEventListener('characteristicvaluechanged', (ev) => {
-      handleStatusValue(ev?.target?.value);
-    });
-    await statusChar.startNotifications();
-    await readStatusOnce();
-  } catch {
-    statusChar = null;
-  }
-
-  try {
-    bootloaderChar = await service.getCharacteristic(BOOTLOADER_CHAR_UUID);
-  } catch {
-    bootloaderChar = null;
-  }
-
-  try {
-    nicknameChar = await service.getCharacteristic(NICKNAME_CHAR_UUID);
-  } catch {
-    nicknameChar = null;
-  }
-
-  if (els.deviceNickname) {
-    const deviceNick = await readDeviceNicknameOnce();
-    const fallback = loadSavedNickname();
-    setNicknameUiValue(deviceNick || fallback);
-  }
-
-  setStatus(t('status.connected'), `${device.name ?? 'ByteFlusher'} / ${SERVICE_UUID}`);
-  setUiConnected(true);
-}
-
 async function reconnectLoop() {
-  if (!device) {
-    throw new Error(t('error.noDevice'));
-  }
-
   let attempt = 0;
   while (!stopRequested) {
     attempt += 1;
     try {
       setStatus(t('status.reconnecting'), t('status.attempt', { n: attempt }));
-
-      if (!device.gatt.connected) {
-        server = await device.gatt.connect();
-      } else {
-        server = device.gatt;
-      }
-
-      const service = await server.getPrimaryService(SERVICE_UUID);
-      flushChar = await service.getCharacteristic(FLUSH_TEXT_CHAR_UUID);
-      try {
-        configChar = await service.getCharacteristic(CONFIG_CHAR_UUID);
-      } catch {
-        configChar = null;
-      }
-
-      try {
-        statusChar = await service.getCharacteristic(STATUS_CHAR_UUID);
-        statusChar.addEventListener('characteristicvaluechanged', (ev) => {
-          handleStatusValue(ev?.target?.value);
-        });
-        await statusChar.startNotifications();
-        await readStatusOnce();
-      } catch {
-        statusChar = null;
-      }
-
-      try {
-        bootloaderChar = await service.getCharacteristic(BOOTLOADER_CHAR_UUID);
-      } catch {
-        bootloaderChar = null;
-      }
-
-      try {
-        nicknameChar = await service.getCharacteristic(NICKNAME_CHAR_UUID);
-      } catch {
-        nicknameChar = null;
-      }
-
-      if (els.deviceNickname) {
-        const deviceNick = await readDeviceNicknameOnce();
-        const fallback = loadSavedNickname();
-        setNicknameUiValue(deviceNick || fallback);
-      }
-
-      setStatus(t('status.reconnectSuccess'), `${device.name ?? 'BLE Device'}`);
-      setUiConnected(true);
+      await ble.reconnect();
+      setStatus(t('status.reconnectSuccess'), ble.getDeviceName() || 'BLE Device');
       return;
     } catch (err) {
       const msg = err?.message ?? String(err);
@@ -911,27 +646,6 @@ async function reconnectLoop() {
       const backoffMs = Math.min(5000, 250 + attempt * 250);
       await sleep(backoffMs);
     }
-  }
-}
-
-async function requestBootloader() {
-  if (!bootloaderChar) {
-    setStatus(t('status.error'), t('error.noBootloaderChar'));
-    return;
-  }
-  if (flushInProgress) {
-    setStatus(t('status.error'), t('error.bootloaderDuringTransfer'));
-    return;
-  }
-
-  const ok = confirm(t('confirm.bootloader'));
-  if (!ok) return;
-
-  setStatus(t('status.rebootRequesting'), t('status.rebootEntering'));
-  try {
-    await bootloaderChar.writeValue(Uint8Array.of(1));
-  } catch (err) {
-    setStatus(t('status.failed'), t('error.bootloaderRequestFailed', { msg: String(err?.message ?? err ?? '') }));
   }
 }
 
@@ -994,10 +708,10 @@ function buildDeviceConfigPayload({ typingDelayMs, modeSwitchDelayMs, keyPressDe
 }
 
 async function setDevicePaused(pausedState) {
-  if (!device?.gatt?.connected) {
+  if (!ble.isConnected()) {
     return;
   }
-  if (!configChar) {
+  if (!ble.getChar(ble.CONFIG_CHAR_UUID)) {
     // 구버전 펌웨어(또는 config char 없음)에서는 장치 pause를 지원하지 않는다.
     return;
   }
@@ -1006,14 +720,14 @@ async function setDevicePaused(pausedState) {
   const toggleKey = getToggleKeySetting();
   const payload = buildDeviceConfigPayload({ ...timing, toggleKey });
   payload[7] = pausedState ? 1 : 0;
-  await configChar.writeValue(payload);
+  await ble.getChar(ble.CONFIG_CHAR_UUID).writeValue(payload);
 }
 
 async function abortDeviceQueueNow() {
-  if (!device?.gatt?.connected) {
+  if (!ble.isConnected()) {
     return;
   }
-  if (!configChar) {
+  if (!ble.getChar(ble.CONFIG_CHAR_UUID)) {
     return;
   }
 
@@ -1022,14 +736,14 @@ async function abortDeviceQueueNow() {
   const payload = buildDeviceConfigPayload({ ...timing, toggleKey });
   // flags: bit1 abort(즉시 폐기)
   payload[7] = 0x02;
-  await configChar.writeValue(payload);
+  await ble.getChar(ble.CONFIG_CHAR_UUID).writeValue(payload);
 }
 
 async function applyDeviceSettings() {
-  if (!device?.gatt?.connected) {
+  if (!ble.isConnected()) {
     throw new Error(t('error.bleNotConnected'));
   }
-  if (!configChar) {
+  if (!ble.getChar(ble.CONFIG_CHAR_UUID)) {
     throw new Error(t('error.noConfigChar'));
   }
 
@@ -1041,19 +755,8 @@ async function applyDeviceSettings() {
   payload[7] = paused ? 1 : 0;
 
   setStatus(t('status.applyingSettings'), `typing=${timing.typingDelayMs}ms, modeSwitch=${timing.modeSwitchDelayMs}ms, keyPress=${timing.keyPressDelayMs}ms, toggle=${toggleKey}`);
-  await configChar.writeValue(payload);
+  await ble.getChar(ble.CONFIG_CHAR_UUID).writeValue(payload);
   setStatus(t('status.settingsApplied'), `typing=${timing.typingDelayMs}ms, modeSwitch=${timing.modeSwitchDelayMs}ms, keyPress=${timing.keyPressDelayMs}ms, toggle=${toggleKey}`);
-}
-
-async function disconnect() {
-  stopRequested = true;
-  paused = false;
-  pauseStatusShown = false;
-  setUiRunState({ running: false, paused: false });
-  setStatus(t('status.disconnecting'), '');
-  if (device?.gatt?.connected) {
-    device.gatt.disconnect();
-  }
 }
 
 function makeSessionId16() {
@@ -1080,14 +783,13 @@ function buildPacket(sessionId, seq, payload) {
 }
 
 async function flushText() {
-  if (!flushChar) {
+  if (!ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)) {
     throw new Error(t('error.noFlushChar'));
   }
 
   const rawText = els.textInput.value ?? '';
   const pre = preprocessTextForFirmware(rawText);
   const bytes = new TextEncoder().encode(pre.text);
-      setStatus(t('status.connected'), `${device.name ?? 'ByteFlusher'} / ${SERVICE_UUID}`);
   // NOTE: UI에서 설정은 Start~Stop 동안 잠긴다.
   const initialChunkSize = clampNumber(els.chunkSize.value, 1, 200, DEFAULT_CHUNK_SIZE);
   const initialDelayMs = clampNumber(els.chunkDelay.value, 0, 200, DEFAULT_CHUNK_DELAY);
@@ -1132,10 +834,10 @@ async function flushText() {
   setStatus(t('status.transferStart'), `${bytes.length} bytes / chunk=${initialChunkSize}, delay=${initialDelayMs}ms / session=${sessionId}${replacedNote}`);
 
   // 속도보다 안정성 우선: 전송 시작 전에 현재 장치 타이밍 설정을 한 번 적용한다.
-  // (configChar가 없으면 무시하고 계속 진행)
+  // (ble.getChar(ble.CONFIG_CHAR_UUID)가 없으면 무시하고 계속 진행)
   try {
-    if (configChar) {
-      await configChar.writeValue(buildDeviceConfigPayload({ ...timing, toggleKey }));
+    if (ble.getChar(ble.CONFIG_CHAR_UUID)) {
+      await ble.getChar(ble.CONFIG_CHAR_UUID).writeValue(buildDeviceConfigPayload({ ...timing, toggleKey }));
     }
   } catch {
     // 설정 적용 실패는 전송 자체를 막지 않는다.
@@ -1155,7 +857,7 @@ async function flushText() {
       continue;
     }
 
-    if (!device?.gatt?.connected || !flushChar) {
+    if (!ble.isConnected() || !ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)) {
       setStatus(t('status.connectionLost'), t('status.connectionLostWhileTransfer'));
       await reconnectLoop();
       continue;
@@ -1171,7 +873,7 @@ async function flushText() {
     const packet = buildPacket(sessionId, seq, chunk);
 
     try {
-      await flushChar.writeValue(packet);
+      await ble.getChar(ble.FLUSH_TEXT_CHAR_UUID).writeValue(packet);
 
       offset += chunk.length;
       seq += 1;
@@ -1186,7 +888,7 @@ async function flushText() {
       setStatus(t('status.transferError'), t('status.chunkRetryPending', { msg }));
 
       try {
-        if (!device?.gatt?.connected) {
+        if (!ble.isConnected()) {
           await reconnectLoop();
         }
       } catch {
@@ -1210,23 +912,24 @@ async function flushText() {
 
 els.btnConnect.addEventListener('click', async () => {
   try {
-    await connect();
+    await ble.connect();
   } catch (err) {
     setStatus(t('status.error'), err?.message ?? String(err));
     setUiConnected(false);
   }
 });
 
-els.btnDisconnect.addEventListener('click', async () => {
-  try {
-    await disconnect();
-  } catch (err) {
-    setStatus(t('status.error'), err?.message ?? String(err));
-  }
+els.btnDisconnect.addEventListener('click', () => {
+  stopRequested = true;
+  paused = false;
+  pauseStatusShown = false;
+  setUiRunState({ running: false, paused: false });
+  setStatus(t('status.disconnecting'), '');
+  ble.disconnect();
 });
 
 if (els.deviceNickname) {
-  setNicknameUiValue(loadSavedNickname());
+  els.deviceNickname.value = ble.loadSavedNickname();
 
   // IME(한글 등) 조합 입력 중에는 value를 건드리면 입력이 깨져서
   // "숫자만 입력되는 것처럼" 보일 수 있다. 조합이 끝난 뒤에만 sanitize한다.
@@ -1236,12 +939,12 @@ if (els.deviceNickname) {
   });
   els.deviceNickname.addEventListener('compositionend', () => {
     nicknameComposing = false;
-    const s = sanitizeNickname(els.deviceNickname.value);
+    const s = ble.sanitizeNickname(els.deviceNickname.value);
     if (els.deviceNickname.value !== s) els.deviceNickname.value = s;
   });
   els.deviceNickname.addEventListener('input', (e) => {
     if (nicknameComposing || e?.isComposing) return;
-    const s = sanitizeNickname(els.deviceNickname.value);
+    const s = ble.sanitizeNickname(els.deviceNickname.value);
     if (els.deviceNickname.value !== s) els.deviceNickname.value = s;
   });
 }
@@ -1249,14 +952,14 @@ if (els.deviceNickname) {
 if (els.btnApplyNickname) {
   els.btnApplyNickname.addEventListener('click', async () => {
     const v = els.deviceNickname ? els.deviceNickname.value : '';
-    await writeDeviceNickname(v);
+    await ble.writeDeviceNickname(v);
   });
 }
 
 if (els.btnBootloader) {
   els.btnBootloader.addEventListener('click', async () => {
     try {
-      await requestBootloader();
+      await ble.requestBootloader();
     } catch {
       // ignore
     }
