@@ -1111,6 +1111,394 @@ function initDeviceTimingSettingInput(el, key, min, max, fallback) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// DOM creation helpers (SPA)
+// ---------------------------------------------------------------------------
+
+function createTextSidebar() {
+  const frag = document.createDocumentFragment();
+
+  // ── Cautions card ──
+  const cautionsCard = document.createElement('section');
+  cautionsCard.className = 'card';
+
+  const cautionsTitle = document.createElement('h2');
+  cautionsTitle.className = 'sidebarTitle';
+  cautionsTitle.setAttribute('data-i18n', 'common.cautions');
+  cautionsTitle.textContent = 'Cautions';
+  cautionsCard.appendChild(cautionsTitle);
+
+  const cautionsUl = document.createElement('ul');
+  cautionsUl.className = 'muted small';
+  cautionsUl.style.cssText = 'margin: 0; padding-left: 18px;';
+
+  const cautionItems = [
+    { attr: 'data-i18n', key: 'common.cautionAuth', text: 'Intended for testing/development automation/demo purposes on systems you own/manage or in explicitly authorized environments.' },
+    { attr: 'data-i18n', key: 'common.cautionIllegal', text: 'Do not use for unauthorized access, security bypass, unauthorized input, or any illegal/unethical purpose.' },
+    { attr: 'data-i18n-html', key: 'common.cautionNoPairing', html: true },
+    { attr: 'data-i18n', key: 'common.cautionFocus', text: 'Verify cursor/focus position on the Target PC before starting.' },
+  ];
+  for (const item of cautionItems) {
+    const li = document.createElement('li');
+    if (item.attr === 'data-i18n-html') {
+      li.setAttribute('data-i18n-html', item.key);
+    } else {
+      li.setAttribute('data-i18n', item.key);
+      li.textContent = item.text;
+    }
+    cautionsUl.appendChild(li);
+  }
+  cautionsCard.appendChild(cautionsUl);
+  frag.appendChild(cautionsCard);
+
+  // ── Transfer Settings card ──
+  const settingsDetails = document.createElement('details');
+  settingsDetails.className = 'card cardCollapsible';
+  settingsDetails.id = 'settingsCardText';
+
+  const settingsSummary = document.createElement('summary');
+  settingsSummary.className = 'cardSummary';
+  const summaryTitle = document.createElement('span');
+  summaryTitle.className = 'cardSummaryTitle';
+  summaryTitle.setAttribute('data-i18n', 'common.transferSettings');
+  summaryTitle.textContent = 'Transfer Settings';
+  settingsSummary.appendChild(summaryTitle);
+  settingsDetails.appendChild(settingsSummary);
+
+  const fieldset = document.createElement('fieldset');
+  fieldset.id = 'settingsFieldset';
+
+  // -- Chunk/retry grid --
+  const grid1 = document.createElement('div');
+  grid1.className = 'grid2';
+
+  function addNumberInput(parent, labelI18n, labelText, inputId, min, max, value) {
+    const label = document.createElement('label');
+    label.className = 'inline';
+    label.style.cssText = 'width: 100%; justify-content: space-between;';
+    const span = document.createElement('span');
+    span.setAttribute('data-i18n', labelI18n);
+    span.textContent = labelText;
+    const input = document.createElement('input');
+    input.id = inputId;
+    input.type = 'number';
+    input.min = String(min);
+    input.max = String(max);
+    input.value = String(value);
+    label.appendChild(span);
+    label.appendChild(input);
+    parent.appendChild(label);
+    return label;
+  }
+
+  function addHint(parent, i18nKey, text, marginTop) {
+    const p = document.createElement('p');
+    p.className = 'muted small';
+    p.style.cssText = 'margin: ' + (marginTop || '-2px') + ' 0 0;';
+    p.setAttribute('data-i18n', i18nKey);
+    p.textContent = text;
+    parent.appendChild(p);
+  }
+
+  addNumberInput(grid1, 'settings.chunkSize', 'Chunk size (bytes)', 'chunkSize', 1, 200, 20);
+  addHint(grid1, 'settings.chunkSizeHint', 'Data size sent via BLE at once. Too large may increase failure rate.');
+
+  addNumberInput(grid1, 'settings.chunkDelay', 'Chunk send interval (ms)', 'chunkDelay', 0, 200, 30);
+  addHint(grid1, 'settings.chunkDelayHint', 'Wait time between chunks (for transfer stabilization).');
+
+  addNumberInput(grid1, 'settings.retryDelay', 'Retry interval (ms)', 'retryDelay', 0, 5000, 300);
+  addHint(grid1, 'settings.retryDelayHint', 'Wait time before reconnect/retry on disconnect or failure.');
+
+  fieldset.appendChild(grid1);
+
+  // -- Divider --
+  const hr = document.createElement('hr');
+  hr.className = 'sidebarDivider';
+  fieldset.appendChild(hr);
+
+  // -- Input Settings title --
+  const inputSettingsTitle = document.createElement('h2');
+  inputSettingsTitle.className = 'settingsTitle';
+  inputSettingsTitle.style.marginTop = '14px';
+  inputSettingsTitle.setAttribute('data-i18n', 'settings.inputSettings');
+  inputSettingsTitle.textContent = 'Input Settings';
+  fieldset.appendChild(inputSettingsTitle);
+
+  // -- Input Settings grid --
+  const grid2 = document.createElement('div');
+  grid2.className = 'grid2';
+  grid2.style.marginTop = '12px';
+
+  // Toggle key select
+  const toggleLabel = document.createElement('label');
+  toggleLabel.className = 'inline';
+  toggleLabel.style.cssText = 'width: 100%; justify-content: space-between;';
+  const toggleSpan = document.createElement('span');
+  toggleSpan.setAttribute('data-i18n', 'settings.toggleKey');
+  toggleSpan.textContent = 'KR/EN toggle key';
+  const toggleSelect = document.createElement('select');
+  toggleSelect.id = 'toggleKey';
+
+  const toggleOptions = [
+    { value: 'rightAlt', i18n: 'settings.toggleKeyRightAlt', text: 'Right Alt (Windows)' },
+    { value: 'capsLock', i18n: 'settings.toggleKeyCapsLock', text: 'Caps Lock (mac)' },
+    { value: 'leftAlt', i18n: 'settings.toggleKeyLeftAlt', text: 'Left Alt' },
+    { value: 'rightCtrl', i18n: 'settings.toggleKeyRightCtrl', text: 'Right Ctrl' },
+    { value: 'leftCtrl', i18n: 'settings.toggleKeyLeftCtrl', text: 'Left Ctrl' },
+    { value: 'rightGui', i18n: 'settings.toggleKeyRightGui', text: 'Right GUI (Win/Cmd)' },
+    { value: 'leftGui', i18n: 'settings.toggleKeyLeftGui', text: 'Left GUI (Win/Cmd)' },
+  ];
+  for (const opt of toggleOptions) {
+    const option = document.createElement('option');
+    option.value = opt.value;
+    option.setAttribute('data-i18n', opt.i18n);
+    option.textContent = opt.text;
+    toggleSelect.appendChild(option);
+  }
+  toggleLabel.appendChild(toggleSpan);
+  toggleLabel.appendChild(toggleSelect);
+  grid2.appendChild(toggleLabel);
+
+  // Replacement string
+  const replLabel = document.createElement('label');
+  replLabel.className = 'inline';
+  replLabel.style.cssText = 'width: 100%; justify-content: space-between;';
+  const replSpan = document.createElement('span');
+  replSpan.setAttribute('data-i18n', 'settings.unsupportedReplacement');
+  replSpan.textContent = 'Replacement string';
+  const replInput = document.createElement('input');
+  replInput.id = 'unsupportedReplacement';
+  replInput.type = 'text';
+  replInput.value = '[?]';
+  replInput.maxLength = 16;
+  replLabel.appendChild(replSpan);
+  replLabel.appendChild(replInput);
+  grid2.appendChild(replLabel);
+
+  addHint(grid2, 'settings.unsupportedReplacementHint', 'Characters not on the keyboard will be replaced with this string.', '9px');
+
+  // Ignore leading whitespace checkbox
+  const wsLabel = document.createElement('label');
+  wsLabel.className = 'inline';
+  wsLabel.style.cssText = 'width: 100%; justify-content: space-between;';
+  const wsSpan = document.createElement('span');
+  wsSpan.setAttribute('data-i18n', 'settings.ignoreLeadingWhitespace');
+  wsSpan.textContent = 'Ignore leading spaces/tabs';
+  const wsCheck = document.createElement('input');
+  wsCheck.id = 'ignoreLeadingWhitespace';
+  wsCheck.type = 'checkbox';
+  wsLabel.appendChild(wsSpan);
+  wsLabel.appendChild(wsCheck);
+  grid2.appendChild(wsLabel);
+
+  addHint(grid2, 'settings.ignoreLeadingWhitespaceHint', 'Leading spaces/tabs on each line will not be sent (useful for IDE auto-formatting).', '9px');
+
+  // Typing delay
+  addNumberInput(grid2, 'settings.typingDelay', 'Key typing delay (ms)', 'typingDelayMs', 0, 1000, 30);
+  addHint(grid2, 'settings.typingDelayHint', 'Wait time after each keystroke. Too short may cause missed/garbled characters (especially HID/IME).');
+
+  // Mode switch delay
+  addNumberInput(grid2, 'settings.modeSwitchDelay', 'KR/EN switch delay (ms)', 'modeSwitchDelayMs', 0, 3000, 100);
+  addHint(grid2, 'settings.modeSwitchDelayHint', 'Stabilization wait after IME toggle. Too short may cause input in the wrong mode.');
+
+  // Key press delay
+  addNumberInput(grid2, 'settings.keyPressDelay', 'Key press hold (ms)', 'keyPressDelayMs', 0, 300, 10);
+  addHint(grid2, 'settings.keyPressDelayHint', 'How long a key is held down. Too short may not register in some environments.');
+
+  fieldset.appendChild(grid2);
+
+  // Timing note
+  const timingNote = document.createElement('p');
+  timingNote.className = 'muted small';
+  timingNote.style.cssText = 'margin: 9px 0 0;';
+  timingNote.setAttribute('data-i18n', 'settings.timingNote');
+  timingNote.textContent = 'These values affect the actual typing speed/stability on the board (USB HID).';
+  fieldset.appendChild(timingNote);
+
+  // Apply/Reset buttons row
+  const btnRow = document.createElement('div');
+  btnRow.className = 'row';
+  btnRow.style.marginTop = '12px';
+
+  const applyBtn = document.createElement('button');
+  applyBtn.id = 'btnApplyDeviceSettings';
+  applyBtn.className = 'primary';
+  applyBtn.disabled = true;
+  applyBtn.setAttribute('data-i18n', 'common.applySettings');
+  applyBtn.textContent = 'Apply Settings';
+  btnRow.appendChild(applyBtn);
+
+  const resetBtn = document.createElement('button');
+  resetBtn.id = 'btnResetSettings';
+  resetBtn.setAttribute('data-i18n', 'common.resetSettings');
+  resetBtn.textContent = 'Reset Settings';
+  btnRow.appendChild(resetBtn);
+
+  const toast = document.createElement('span');
+  toast.id = 'textSettingsToast';
+  toast.className = 'muted small settingsToast';
+  toast.setAttribute('aria-live', 'polite');
+  btnRow.appendChild(toast);
+
+  fieldset.appendChild(btnRow);
+  settingsDetails.appendChild(fieldset);
+  frag.appendChild(settingsDetails);
+
+  // ── Notes card ──
+  const notesCard = document.createElement('section');
+  notesCard.className = 'card';
+
+  const notesTitle = document.createElement('h2');
+  notesTitle.className = 'sidebarTitle';
+  notesTitle.setAttribute('data-i18n', 'common.notes');
+  notesTitle.textContent = 'Notes';
+  notesCard.appendChild(notesTitle);
+
+  const notesDiv = document.createElement('div');
+  notesDiv.className = 'muted small';
+  notesDiv.style.cssText = 'margin: 0 0 10px 0;';
+
+  const procTitle = document.createElement('div');
+  procTitle.style.cssText = 'font-weight: 600; margin-bottom: 4px;';
+  procTitle.setAttribute('data-i18n', 'text.procedureSummaryTitle');
+  procTitle.textContent = 'Execution procedure (summary)';
+  notesDiv.appendChild(procTitle);
+
+  const procSummary = document.createElement('div');
+  procSummary.setAttribute('data-i18n', 'text.procedureSummary');
+  procSummary.textContent = 'Text preprocessing (replacement/whitespace options) \u2192 BLE packet splitting (chunks) \u2192 Start \u2192 (optional) device timing settings \u2192 chunk transmission loop (writeValue) \u2192 device (USB HID) types \u2192 complete (Stop/done)';
+  notesDiv.appendChild(procSummary);
+
+  const metricsNote = document.createElement('div');
+  metricsNote.style.marginTop = '6px';
+  metricsNote.setAttribute('data-i18n', 'text.metricsNote');
+  metricsNote.textContent = 'Metric meanings: ETA/Basis are values calculated from input/settings (previewable), Progress is an approximation based on sent bytes ratio, Start/Elapsed/End are wall-clock based.';
+  notesDiv.appendChild(metricsNote);
+
+  notesCard.appendChild(notesDiv);
+
+  const notesUl = document.createElement('ul');
+  notesUl.className = 'muted small';
+  notesUl.style.cssText = 'margin: 0; padding-left: 18px;';
+
+  const noteItems = [
+    { attr: 'data-i18n', key: 'text.noteBluetooth', text: 'Web Bluetooth only works in Chrome/Edge.' },
+    { attr: 'data-i18n', key: 'text.noteUSB', text: 'Target PC must allow USB keyboard devices.' },
+    { attr: 'data-i18n', key: 'text.noteFocusStart', text: 'Place the cursor at the target input position on the Target PC before starting (Flush).' },
+    { attr: 'data-i18n-html', key: 'text.cautionEnglishMode' },
+    { attr: 'data-i18n', key: 'text.noteBLESplit', text: 'BLE transfers have length limits and are split by default.' },
+  ];
+  for (const item of noteItems) {
+    const li = document.createElement('li');
+    if (item.attr === 'data-i18n-html') {
+      li.setAttribute('data-i18n-html', item.key);
+    } else {
+      li.setAttribute('data-i18n', item.key);
+      li.textContent = item.text;
+    }
+    notesUl.appendChild(li);
+  }
+  notesCard.appendChild(notesUl);
+  frag.appendChild(notesCard);
+
+  return frag;
+}
+
+function createTextMain() {
+  const frag = document.createDocumentFragment();
+
+  const card = document.createElement('section');
+  card.className = 'card';
+
+  // Label
+  const label = document.createElement('label');
+  label.setAttribute('for', 'textInput');
+  label.className = 'label';
+  label.setAttribute('data-i18n', 'text.flushLabel');
+  label.textContent = 'Flush Text';
+  card.appendChild(label);
+
+  // Textarea
+  const textarea = document.createElement('textarea');
+  textarea.id = 'textInput';
+  textarea.rows = 28;
+  textarea.placeholder = 'Text entered here will be typed on the Target PC.';
+  textarea.setAttribute('data-i18n-placeholder', 'text.textareaPlaceholder');
+  card.appendChild(textarea);
+
+  // Button row
+  const btnRow = document.createElement('div');
+  btnRow.className = 'row';
+  btnRow.style.marginTop = '24px';
+
+  const buttons = [
+    { id: 'btnStart', cls: 'primary controlButton', i18n: 'common.startText', text: 'Start (Text)', disabled: true },
+    { id: 'btnPause', cls: 'controlButton', i18n: 'common.pause', text: 'Pause', disabled: true },
+    { id: 'btnResume', cls: 'controlButton', i18n: 'common.resume', text: 'Resume', disabled: true },
+    { id: 'btnStop', cls: 'danger controlButton', i18n: 'common.stop', text: 'Stop', disabled: true },
+  ];
+  for (const b of buttons) {
+    const btn = document.createElement('button');
+    btn.id = b.id;
+    btn.className = b.cls;
+    btn.disabled = b.disabled;
+    btn.setAttribute('data-i18n', b.i18n);
+    btn.textContent = b.text;
+    btnRow.appendChild(btn);
+  }
+  card.appendChild(btnRow);
+
+  // Hint / checklist
+  const hintDiv = document.createElement('div');
+  hintDiv.className = 'muted small';
+  hintDiv.id = 'startHintText';
+  hintDiv.style.marginTop = '8px';
+  card.appendChild(hintDiv);
+
+  const checklistDiv = document.createElement('div');
+  checklistDiv.className = 'muted small';
+  checklistDiv.id = 'startChecklistText';
+  checklistDiv.style.cssText = 'margin-top: 6px; white-space: pre-wrap;';
+  card.appendChild(checklistDiv);
+
+  // Job metrics
+  const metricsDiv = document.createElement('div');
+  metricsDiv.id = 'jobMetrics';
+  metricsDiv.className = 'jobMetrics';
+  metricsDiv.setAttribute('aria-live', 'polite');
+  metricsDiv.style.marginTop = '10px';
+
+  const metrics = [
+    { keyI18n: 'metric.estimate', keyText: 'ETA', valueId: 'etaText' },
+    { keyI18n: 'metric.startTime', keyText: 'Start', valueId: 'startTimeText' },
+    { keyI18n: 'metric.bytes', keyText: 'Bytes', valueId: 'totalBytesText' },
+    { keyI18n: 'metric.stage', keyText: 'Stage', valueId: 'stageText' },
+    { keyI18n: 'metric.elapsed', keyText: 'Elapsed', valueId: 'elapsedText' },
+    { keyI18n: 'metric.progress', keyText: 'Progress', valueId: 'progressText' },
+    { keyI18n: 'metric.endTime', keyText: 'End', valueId: 'endTimeText' },
+    { keyI18n: 'metric.basis', keyText: 'Basis', valueId: 'estimateBasisText', wide: true },
+  ];
+  for (const m of metrics) {
+    const line = document.createElement('div');
+    line.className = m.wide ? 'jobLine jobLineWide' : 'jobLine';
+    const keySpan = document.createElement('span');
+    keySpan.className = 'jobKey';
+    keySpan.setAttribute('data-i18n', m.keyI18n);
+    keySpan.textContent = m.keyText;
+    const valSpan = document.createElement('span');
+    valSpan.id = m.valueId;
+    valSpan.className = 'muted small';
+    valSpan.textContent = '-';
+    line.appendChild(keySpan);
+    line.appendChild(valSpan);
+    metricsDiv.appendChild(line);
+  }
+  card.appendChild(metricsDiv);
+
+  frag.appendChild(card);
+  return frag;
+}
+
 initDeviceTimingSettingInput(els.typingDelayMs, LS_TYPING_DELAY_MS, 0, 1000, DEFAULT_TYPING_DELAY_MS);
 initDeviceTimingSettingInput(els.modeSwitchDelayMs, LS_MODE_SWITCH_DELAY_MS, 0, 3000, DEFAULT_MODE_SWITCH_DELAY_MS);
 initDeviceTimingSettingInput(els.keyPressDelayMs, LS_KEY_PRESS_DELAY_MS, 0, 300, DEFAULT_KEY_PRESS_DELAY_MS);
