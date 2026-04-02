@@ -138,59 +138,23 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function resolveStatusWaiters() {
-  const waiters = statusWaiters;
-  statusWaiters = [];
-  for (const fn of waiters) {
-    try {
-      fn();
-    } catch {
-      // ignore
-    }
-  }
-}
-
-function handleStatusValue(dataView) {
-  if (!dataView) return;
-  if (dataView.byteLength < 4) return;
-  const cap = dataView.getUint16(0, true);
-  const free = dataView.getUint16(2, true);
-  if (Number.isFinite(cap) && cap > 0) deviceBufCapacity = cap;
-  if (Number.isFinite(free) && free >= 0) deviceBufFree = free;
-  deviceBufUpdatedAt = performance.now();
-  resolveStatusWaiters();
-}
-
-async function readStatusOnce() {
-  if (!statusChar) return;
-  try {
-    const v = await statusChar.readValue();
-    handleStatusValue(v);
-  } catch {
-    // ignore
-  }
-}
-
 function waitForStatusUpdate(timeoutMs) {
   return new Promise((resolve) => {
-    const t = setTimeout(resolve, timeoutMs);
-    statusWaiters.push(() => {
-      clearTimeout(t);
-      resolve();
-    });
+    const timer = setTimeout(resolve, timeoutMs);
+    ble.addStatusWaiter(() => { clearTimeout(timer); resolve(); });
   });
 }
 
 async function waitForDeviceRoom({ requiredBytes, maxBacklogBytes }) {
-  if (!statusChar) return;
+  if (!ble.getChar(ble.STATUS_CHAR_UUID)) return;
   const startedAt = performance.now();
 
   while (!stopRequested) {
     if (paused) return;
-    if (!device?.gatt?.connected) return;
+    if (!ble.isConnected()) return;
 
-    const cap = deviceBufCapacity;
-    const free = deviceBufFree;
+    const cap = ble.getDeviceBufCapacity();
+    const free = ble.getDeviceBufFree();
     if (Number.isFinite(cap) && Number.isFinite(free)) {
       const used = Math.max(0, cap - free);
       const enoughFree = free >= requiredBytes;
@@ -199,8 +163,8 @@ async function waitForDeviceRoom({ requiredBytes, maxBacklogBytes }) {
     }
 
     const now = performance.now();
-    if (!Number.isFinite(deviceBufUpdatedAt) || now - deviceBufUpdatedAt > 800) {
-      await readStatusOnce();
+    if (!Number.isFinite(ble.getDeviceBufUpdatedAt()) || now - ble.getDeviceBufUpdatedAt() > 800) {
+      await ble.readStatusOnce();
     }
 
     const waitedMs = now - startedAt;
@@ -251,10 +215,10 @@ function buildDeviceConfigPayload({ typingDelayMs, modeSwitchDelayMs, keyPressDe
 }
 
 async function writeDeviceConfig({ typingDelayMs, modeSwitchDelayMs, keyPressDelayMs, toggleKeyId, pausedFlag, abortFlag }) {
-  if (!configChar) return;
+  if (!ble.getChar(ble.CONFIG_CHAR_UUID)) return;
   const flags = (pausedFlag ? 0x01 : 0) | (abortFlag ? 0x02 : 0);
   const payload = buildDeviceConfigPayload({ typingDelayMs, modeSwitchDelayMs, keyPressDelayMs, toggleKeyId, flags });
-  await configChar.writeValue(payload);
+  await ble.getChar(ble.CONFIG_CHAR_UUID).writeValue(payload);
 }
 
 function makeSessionId16() {
@@ -286,7 +250,7 @@ function createBleTextTx() {
 }
 
 async function txSendBytesWithFlowControl(tx, bytes, { chunkSize = 20, delayMs = 0 } = {}) {
-  if (!flushChar) throw new Error(t('error.noFlushCharShort'));
+  if (!ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)) throw new Error(t('error.noFlushCharShort'));
   if (!tx) throw new Error(t('error.noTx'));
   let offset = 0;
 
@@ -296,13 +260,13 @@ async function txSendBytesWithFlowControl(tx, bytes, { chunkSize = 20, delayMs =
       await sleep(120);
       continue;
     }
-    if (!device?.gatt?.connected) throw new Error(t('error.bleDisconnected'));
+    if (!ble.isConnected()) throw new Error(t('error.bleDisconnected'));
 
     const chunk = bytes.slice(offset, offset + chunkSize);
     const maxBacklogBytes = Math.max(32, chunkSize);
     await waitForDeviceRoom({ requiredBytes: chunk.length, maxBacklogBytes });
     const packet = buildPacket(tx.sessionId, tx.seq, chunk);
-    await flushChar.writeValue(packet);
+    await ble.getChar(ble.FLUSH_TEXT_CHAR_UUID).writeValue(packet);
     offset += chunk.length;
     tx.seq += 1;
     if (delayMs > 0) await sleep(delayMs);
@@ -380,7 +344,7 @@ function splitStringIntoChunks(s, chunkLen) {
 }
 
 async function macroWrite(cmd, payloadBytes) {
-  if (!macroChar) throw new Error(t('error.noMacroChar'));
+  if (!ble.getChar(ble.MACRO_CHAR_UUID)) throw new Error(t('error.noMacroChar'));
   while (paused && !stopRequested) await sleep(120);
   if (stopRequested) throw new Error(t('status.userStopped'));
   const payload = payloadBytes ? new Uint8Array(payloadBytes) : new Uint8Array(0);
@@ -389,7 +353,7 @@ async function macroWrite(cmd, payloadBytes) {
   buf[0] = cmd & 0xff;
   buf[1] = payload.length & 0xff;
   buf.set(payload, 2);
-  await macroChar.writeValue(buf);
+  await ble.getChar(ble.MACRO_CHAR_UUID).writeValue(buf);
 }
 
 async function macroOpenRun() {
@@ -602,63 +566,6 @@ function setStatus(text, details = '') {
   if (els.detailsText) els.detailsText.textContent = details;
 }
 
-function sanitizeNickname(raw) {
-  const s = String(raw ?? '').trim();
-  return s.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12);
-}
-
-function loadSavedNickname() {
-  return sanitizeNickname(localStorage.getItem(LS_DEVICE_NICKNAME) || '');
-}
-
-function saveNicknameToLocalStorage(v) {
-  const s = sanitizeNickname(v);
-  if (s) localStorage.setItem(LS_DEVICE_NICKNAME, s);
-  else localStorage.removeItem(LS_DEVICE_NICKNAME);
-}
-
-function setNicknameUiValue(v) {
-  if (!els.deviceNickname) return;
-  els.deviceNickname.value = sanitizeNickname(v);
-}
-
-async function readDeviceNicknameOnce() {
-  if (!nicknameChar) return '';
-  try {
-    const v = await nicknameChar.readValue();
-    const u8 = new Uint8Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
-    const s = new TextDecoder().decode(u8);
-    return sanitizeNickname(s);
-  } catch {
-    return '';
-  }
-}
-
-async function writeDeviceNickname(nickname) {
-  if (!nicknameChar) {
-    setStatus(t('status.error'), t('error.noNicknameChar'));
-    return;
-  }
-
-  const raw = String(nickname ?? '').trim();
-  const s = sanitizeNickname(raw);
-  if (raw && !s) {
-    setStatus(t('status.error'), t('error.nicknameInvalid'));
-    return;
-  }
-  try {
-    if (!s) {
-      await nicknameChar.writeValue(Uint8Array.of(0));
-    } else {
-      await nicknameChar.writeValue(new TextEncoder().encode(s));
-    }
-    saveNicknameToLocalStorage(s);
-    setNicknameUiValue(s);
-    setStatus(t('status.connected'), t('status.nicknameSaved', { name: s || '-' }));
-  } catch (err) {
-    setStatus(t('status.error'), t('status.nicknameSaveFailed', { msg: String(err?.message ?? err ?? '') }));
-  }
-}
 
 function setSummary(text, details) {
   if (els.filesSummary) els.filesSummary.textContent = text ?? '-';
@@ -736,7 +643,7 @@ function computeStartChecklist() {
     return map[hintKey] || t('files.compactConditionNotMet');
   };
 
-  const isConnected = Boolean(device?.gatt?.connected);
+  const isConnected = ble.isConnected();
   const targetSystem = getSelectedTargetSystem();
   const dirOk = isValidWindowsAbsolutePath(els.targetDir?.value ?? '');
   const sourceOk = selectedKind != null && !selectedHasError;
@@ -994,14 +901,14 @@ function buildBootstrapScript({ targetDir, tmpB64Path, overwritePolicy, diagLog 
 function setUiConnected(isConnected) {
   if (els.btnConnect) els.btnConnect.disabled = isConnected || running;
   if (els.btnDisconnect) els.btnDisconnect.disabled = !isConnected || running;
-  if (els.btnApplyNickname) els.btnApplyNickname.disabled = !isConnected || running || !nicknameChar;
+  if (els.btnApplyNickname) els.btnApplyNickname.disabled = !isConnected || running || !ble.getChar(ble.NICKNAME_CHAR_UUID);
 }
 
 function setUiRunState({ isRunning, isPaused }) {
   running = Boolean(isRunning);
   paused = Boolean(isPaused);
 
-  const isConnected = Boolean(device?.gatt?.connected);
+  const isConnected = ble.isConnected();
 
   setUiConnected(isConnected);
 
@@ -1669,7 +1576,7 @@ function onFolderPicked() {
 }
 
 function computeStartReadiness() {
-  const isConnected = Boolean(device?.gatt?.connected);
+  const isConnected = ble.isConnected();
   if (!isConnected) return { ok: false, hint: t('files.hintConnectFirst'), hintKey: 'connectFirst' };
   if (running) return { ok: false, hint: '', hintKey: '' };
 
@@ -1716,191 +1623,8 @@ function updateStartEnabled() {
   updatePreStartMetrics();
 }
 
-function handleDisconnected() {
-  const wasRunning = running;
-  const wasPaused = paused;
-  setUiRunState({ isRunning: false, isPaused: false });
-  if (wasRunning && !stopRequested) {
-    // 전송(실행) 중 연결이 끊긴 경우에만 "연결 끊김"으로 표시한다.
-    // 유휴 상태에서는 항상 "연결 안 됨"을 유지한다.
-    setStatus(t('status.connectionLost'), wasPaused ? t('status.connectionLostWhilePaused') : t('status.connectionLostWhileTransfer'));
-  } else {
-    setStatus(t('status.disconnected'), '');
-  }
-  device = null;
-  server = null;
-  flushChar = null;
-  configChar = null;
-  statusChar = null;
-  macroChar = null;
-  bootloaderChar = null;
-  nicknameChar = null;
-
-  deviceBufCapacity = null;
-  deviceBufFree = null;
-  deviceBufUpdatedAt = 0;
-  statusWaiters = [];
-
-  stopRequested = false;
-  updateStartEnabled();
-
-  if (els.btnBootloader) els.btnBootloader.disabled = true;
-}
-
-function getConnectFailureHelpText(err) {
-  const name = (err?.name ?? '').toString();
-  const msg = (err?.message ?? String(err ?? '')).toString();
-
-  if (/No\s+Characteristics\s+matching\s+UUID/i.test(msg) || /No\s+Services\s+matching\s+UUID/i.test(msg)) {
-    return t('error.gattNotFound');
-  }
-
-  if (name === 'NotSupportedError') {
-    return t('error.notSupported');
-  }
-
-  if (name === 'NotAllowedError') {
-    return t('error.notAllowed');
-  }
-
-  return t('error.connectFailed', { msg });
-}
-
-async function connect() {
-  if (!navigator.bluetooth) {
-    throw new Error(t('error.notSupported'));
-  }
-
-  setStatus(t('status.selectingDevice'), t('status.selectDevicePopup'));
-
-  const requestOptions = {
-    filters: [{ services: [SERVICE_UUID] }, { namePrefix: 'ByteFlusher' }],
-    optionalServices: [SERVICE_UUID],
-  };
-
-  let d;
-  try {
-    d = await navigator.bluetooth.requestDevice(requestOptions);
-  } catch (err) {
-    const name = (err?.name ?? '').toString();
-    if (name === 'NotFoundError') {
-      setStatus(t('status.disconnected'), '');
-      handleDisconnected();
-      return;
-    }
-    throw err;
-  }
-  d.addEventListener('gattserverdisconnected', handleDisconnected);
-
-  setStatus(t('status.connecting'), d.name || '');
-  let s;
-  let service;
-  let fc;
-  let cc;
-  let sc;
-  let mc;
-  let bc;
-  let nc;
-  try {
-    s = await d.gatt.connect();
-    service = await s.getPrimaryService(SERVICE_UUID);
-    fc = await service.getCharacteristic(FLUSH_TEXT_CHAR_UUID);
-    cc = await service.getCharacteristic(CONFIG_CHAR_UUID);
-    sc = await service.getCharacteristic(STATUS_CHAR_UUID);
-    mc = await service.getCharacteristic(MACRO_CHAR_UUID);
-    bc = await service.getCharacteristic(BOOTLOADER_CHAR_UUID);
-    try {
-      nc = await service.getCharacteristic(NICKNAME_CHAR_UUID);
-    } catch {
-      nc = null;
-    }
-  } catch (err) {
-    setStatus(t('status.connectionFailed'), getConnectFailureHelpText(err));
-    device = null;
-    server = null;
-    flushChar = null;
-    configChar = null;
-    statusChar = null;
-    macroChar = null;
-    bootloaderChar = null;
-    updateStartEnabled();
-    return;
-  }
-
-  // Flow control status notifications
-  sc.addEventListener('characteristicvaluechanged', (ev) => {
-    try {
-      handleStatusValue(ev?.target?.value);
-    } catch {
-      // ignore
-    }
-  });
-  try {
-    await sc.startNotifications();
-  } catch {
-    // Some environments may fail notify; we still have read fallback.
-  }
-
-  device = d;
-  server = s;
-  flushChar = fc;
-  configChar = cc;
-  statusChar = sc;
-  macroChar = mc;
-  bootloaderChar = bc;
-  nicknameChar = nc;
-
-  // Prime status values once.
-  await readStatusOnce();
-
-  if (els.deviceNickname) {
-    const deviceNick = await readDeviceNicknameOnce();
-    const fallback = loadSavedNickname();
-    setNicknameUiValue(deviceNick || fallback);
-  }
-
-  setStatus(t('status.connected'), `${d.name || 'ByteFlusher'} / ${SERVICE_UUID}`);
-  setUiRunState({ isRunning: false, isPaused: false });
-  updateStartEnabled();
-
-  if (els.btnBootloader) els.btnBootloader.disabled = false;
-  if (els.btnApplyNickname) els.btnApplyNickname.disabled = !nicknameChar;
-}
-
-async function requestBootloader() {
-  if (!bootloaderChar) {
-    setStatus(t('status.error'), t('error.connectDevice'));
-    return;
-  }
-  if (running || paused) {
-    setStatus(t('status.error'), t('error.bootloaderDuringTransfer'));
-    return;
-  }
-
-  const ok = confirm(t('confirm.bootloaderFiles'));
-  if (!ok) return;
-
-  setStatus(t('status.rebootRequesting'), t('status.rebootEntering'));
-  try {
-    await bootloaderChar.writeValue(Uint8Array.of(1));
-  } catch (err) {
-    setStatus(t('status.failed'), t('error.bootloaderRequestFailed', { msg: String(err?.message ?? err ?? '') }));
-  }
-}
-
-async function disconnect() {
-  if (!device?.gatt?.connected) return;
-  setStatus(t('status.disconnecting'), '');
-  try {
-    device.gatt.disconnect();
-  } catch {
-    // ignore
-  }
-  handleDisconnected();
-}
-
 async function startRun() {
-  if (!flushChar) {
+  if (!ble.getChar(ble.FLUSH_TEXT_CHAR_UUID)) {
     setStatus(t('status.error'), t('error.connectDevice'));
     return;
   }
@@ -1970,7 +1694,7 @@ async function startRun() {
   try {
     stagePrepare();
 
-    if (!macroChar) {
+    if (!ble.getChar(ble.MACRO_CHAR_UUID)) {
       throw new Error(t('error.noMacroChar'));
     }
 
@@ -2250,7 +1974,7 @@ function wireEvents() {
   if (els.btnConnect) {
     els.btnConnect.addEventListener('click', async () => {
       try {
-        await connect();
+        await ble.connect();
       } catch (err) {
         setStatus(t('status.error'), String(err?.message || err));
         setUiConnected(false);
@@ -2261,13 +1985,13 @@ function wireEvents() {
 
   if (els.btnDisconnect) {
     els.btnDisconnect.addEventListener('click', async () => {
-      await disconnect();
+      ble.disconnect();
     });
   }
 
   if (els.btnBootloader) {
     els.btnBootloader.addEventListener('click', async () => {
-      await requestBootloader();
+      await ble.requestBootloader();
     });
   }
 
@@ -2334,7 +2058,7 @@ function wireEvents() {
   }
 
   if (els.deviceNickname) {
-    setNicknameUiValue(loadSavedNickname());
+    els.deviceNickname.value = ble.loadSavedNickname();
 
     // IME(한글 등) 조합 입력 중에는 value를 건드리면 입력이 깨질 수 있다.
     // 조합이 끝난 뒤에만 sanitize한다.
@@ -2344,12 +2068,12 @@ function wireEvents() {
     });
     els.deviceNickname.addEventListener('compositionend', () => {
       nicknameComposing = false;
-      const s = sanitizeNickname(els.deviceNickname.value);
+      const s = ble.sanitizeNickname(els.deviceNickname.value);
       if (els.deviceNickname.value !== s) els.deviceNickname.value = s;
     });
     els.deviceNickname.addEventListener('input', (e) => {
       if (nicknameComposing || e?.isComposing) return;
-      const s = sanitizeNickname(els.deviceNickname.value);
+      const s = ble.sanitizeNickname(els.deviceNickname.value);
       if (els.deviceNickname.value !== s) els.deviceNickname.value = s;
     });
   }
@@ -2357,7 +2081,7 @@ function wireEvents() {
   if (els.btnApplyNickname) {
     els.btnApplyNickname.addEventListener('click', async () => {
       const v = els.deviceNickname ? els.deviceNickname.value : '';
-      await writeDeviceNickname(v);
+      await ble.writeDeviceNickname(v);
     });
   }
 
