@@ -14,7 +14,7 @@ extern "C" void enterSerialDfu(void);
 static constexpr bool kEnableUsbCdcSerialLog = false;
 
 // 펌웨어 버전 (메이저.마이너.패치)
-static const char* kFirmwareVersion = "1.1.42";
+static const char* kFirmwareVersion = "1.2.0";
 
 static void start_advertising();
 

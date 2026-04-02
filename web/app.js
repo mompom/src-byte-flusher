@@ -95,7 +95,8 @@ async function handleSaveNickname() {
 // ---------------------------------------------------------------------------
 
 function onBleConnect() {
-  setStatus(t('status.connected'), ble.getDeviceName() || 'BLE Device');
+  const scrollAvail = ble.getChar(ble.SCROLL_CHAR_UUID) ? 'scroll:OK' : 'scroll:N/A';
+  setStatus(t('status.connected'), `${ble.getDeviceName() || 'BLE Device'} (${scrollAvail})`);
   setUiConnected(true);
 }
 
